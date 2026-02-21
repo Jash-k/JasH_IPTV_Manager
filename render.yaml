@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: jash-addon
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: node backend/server.js
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: PUBLIC_URL
+        fromService:
+          type: web
+          name: jash-addon
+          property: host
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health
+    autoDeploy: true

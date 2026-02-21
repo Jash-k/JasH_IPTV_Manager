@@ -1,0 +1,131 @@
+import { Tab } from '../types';
+import { cn } from '../utils/cn';
+
+interface Props {
+  activeTab: Tab;
+  setActiveTab: (t: Tab) => void;
+  streamCount: number;
+  sourceCount: number;
+  backendOnline?: boolean;
+}
+
+const tabs: { id: Tab; label: string; icon: string; highlight?: string; badge?: string }[] = [
+  { id: 'sources',    label: 'Sources',   icon: '📡' },
+  { id: 'streams',    label: 'Streams',   icon: '📺' },
+  { id: 'groups',     label: 'Groups',    icon: '📂' },
+  { id: 'health',     label: 'Health',    icon: '❤️' },
+  { id: 'statistics', label: 'Stats',     icon: '📊' },
+  { id: 'handler',    label: 'Handler',   icon: '🧩', highlight: 'blue',   badge: 'HLS' },
+  { id: 'export',     label: 'Export',    icon: '⬇️', highlight: 'green',  badge: '↓' },
+  { id: 'backend',    label: 'Backend',   icon: '🖥️', highlight: 'violet', badge: 'LIVE' },
+  { id: 'settings',   label: 'Settings',  icon: '⚙️' },
+  { id: 'install',    label: 'Install',   icon: '🔌' },
+];
+
+export const Header: React.FC<Props> = ({
+  activeTab, setActiveTab, streamCount, sourceCount, backendOnline,
+}) => {
+  return (
+    <header className="bg-gray-900 border-b border-gray-700 sticky top-0 z-40">
+      <div className="max-w-screen-2xl mx-auto px-4">
+
+        {/* Top bar */}
+        <div className="flex items-center justify-between py-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center text-xl shadow-lg">
+              📡
+            </div>
+            <div>
+              <h1 className="text-white font-bold text-xl tracking-tight">JASH ADDON</h1>
+              <p className="text-gray-400 text-xs">Stremio IPTV Configurator · Samsung Tizen Optimized</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 text-sm">
+            <div className="flex items-center gap-1.5 bg-gray-800 px-3 py-1.5 rounded-lg">
+              <span className="text-purple-400 font-bold">📡</span>
+              <span className="text-gray-300 font-semibold">{sourceCount}</span>
+              <span className="text-gray-500 text-xs">sources</span>
+            </div>
+            <div className="flex items-center gap-1.5 bg-gray-800 px-3 py-1.5 rounded-lg">
+              <span className="text-blue-400 font-bold">📺</span>
+              <span className="text-gray-300 font-semibold">{streamCount.toLocaleString()}</span>
+              <span className="text-gray-500 text-xs">streams</span>
+            </div>
+            {/* Backend online indicator */}
+            <div className={cn(
+              'hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-all',
+              backendOnline
+                ? 'bg-violet-900/40 border-violet-700/50 text-violet-300'
+                : 'bg-gray-800 border-gray-700 text-gray-500'
+            )}>
+              <span className={cn('w-2 h-2 rounded-full', backendOnline ? 'bg-violet-400 animate-pulse' : 'bg-gray-600')} />
+              {backendOnline ? 'Backend ●' : 'Backend ○'}
+            </div>
+            <div className="hidden sm:flex items-center gap-1.5 bg-green-900/40 border border-green-700/50 px-3 py-1.5 rounded-lg">
+              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-green-400 text-xs font-medium">LIVE</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Nav Tabs */}
+        <nav className="flex gap-1 pb-0 overflow-x-auto scrollbar-hide">
+          {tabs.map(tab => {
+            const isActive = activeTab === tab.id;
+            const isBlue   = tab.highlight === 'blue';
+            const isGreen  = tab.highlight === 'green';
+            const isViolet = tab.highlight === 'violet';
+
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-t-lg transition-all whitespace-nowrap border-b-2 focus:outline-none focus:ring-2 focus:ring-purple-500',
+                  isActive
+                    ? isBlue
+                      ? 'bg-blue-900/60 text-blue-300 border-blue-500'
+                      : isGreen
+                        ? 'bg-emerald-900/60 text-emerald-300 border-emerald-500'
+                        : isViolet
+                          ? 'bg-violet-900/60 text-violet-300 border-violet-500'
+                          : 'bg-gray-800 text-white border-purple-500'
+                    : isBlue
+                      ? 'text-blue-400 border-transparent hover:text-blue-300 hover:bg-blue-900/30'
+                      : isGreen
+                        ? 'text-emerald-400 border-transparent hover:text-emerald-300 hover:bg-emerald-900/30'
+                        : isViolet
+                          ? 'text-violet-400 border-transparent hover:text-violet-300 hover:bg-violet-900/30'
+                          : 'text-gray-400 border-transparent hover:text-gray-200 hover:bg-gray-800/50'
+                )}
+              >
+                <span>{tab.icon}</span>
+                <span className="hidden sm:inline">{tab.label}</span>
+                {/* Highlight badge */}
+                {tab.badge && tab.highlight && !isActive && (
+                  <span className={cn(
+                    'hidden sm:inline text-xs px-1.5 py-0.5 rounded-full leading-none border',
+                    isBlue
+                      ? 'bg-blue-500/20 text-blue-400 border-blue-500/40'
+                      : isGreen
+                        ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                        : 'bg-violet-500/20 text-violet-400 border-violet-500/40'
+                  )}>
+                    {/* Show live dot for backend tab when online */}
+                    {isViolet && backendOnline ? (
+                      <span className="flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-violet-400 inline-block" />
+                        {tab.badge}
+                      </span>
+                    ) : tab.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+    </header>
+  );
+};
