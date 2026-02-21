@@ -1,13 +1,13 @@
 /**
- * JASH ADDON — Backend Sync Utility
- * Pushes the current stream configuration from the React frontend
- * to the backend server so Stremio can access it via the addon endpoints.
+ * JASH ADDON — Backend Sync Utility v2
+ * Pushes stream configuration from React frontend to the backend server.
  */
 
 export interface SyncResult {
   ok: boolean;
   streams?: number;
   error?: string;
+  version?: string;
   backendUrl?: string;
 }
 
@@ -22,20 +22,49 @@ export interface BackendHealth {
   manifestUrl: string;
 }
 
-/** Detect the backend base URL — same origin in production, localhost:7000 in dev */
+/**
+ * Detect the backend base URL.
+ * • Production (Render/Koyeb/Railway): same origin as the React app
+ * • Local dev: Vite runs on :5173 but backend runs on :7000
+ */
 export function getBackendBase(): string {
   if (typeof window === 'undefined') return 'http://localhost:7000';
+
   const { protocol, hostname, port } = window.location;
-  // Production: same origin as the React app (Render/Koyeb/Railway)
+
+  // Production — same host serves both frontend and backend
   if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
-    return `${protocol}//${hostname}${port && port !== '80' && port !== '443' ? `:${port}` : ''}`;
+    const portSuffix =
+      port && port !== '80' && port !== '443' ? `:${port}` : '';
+    return `${protocol}//${hostname}${portSuffix}`;
   }
-  // Development: backend runs on 7000, Vite on 5173
+
+  // Local dev — backend runs on 7000, Vite on 5173
   return 'http://localhost:7000';
 }
 
 /**
+ * Manifest URL — the https:// URL to paste into Stremio.
+ */
+export function getManifestUrl(): string {
+  return `${getBackendBase()}/manifest.json`;
+}
+
+/**
+ * Stremio deep-link format:
+ *   stremio://HOST:PORT/manifest.json
+ * (no protocol prefix — Stremio handles this itself)
+ */
+export function getStremioInstallUrl(): string {
+  const base    = getBackendBase();
+  const noProto = base.replace(/^https?:\/\//, '');
+  return `stremio://${noProto}/manifest.json`;
+}
+
+/**
  * Sync the full configuration to the backend.
+ * After this call, the backend bumps its manifest version so
+ * Stremio detects new channels without requiring addon reinstall.
  */
 export async function syncConfigToBackend(config: {
   streams: unknown[];
@@ -51,7 +80,7 @@ export async function syncConfigToBackend(config: {
       method : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body   : JSON.stringify(config),
-      signal : AbortSignal.timeout(10000),
+      signal : AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {
@@ -60,28 +89,35 @@ export async function syncConfigToBackend(config: {
     }
 
     const data = await response.json();
-    return { ok: true, streams: data.streams, backendUrl: base };
+    return {
+      ok      : true,
+      streams : data.streams,
+      version : data.version,
+      backendUrl: base,
+    };
 
   } catch (e) {
-    const msg = (e as Error).message;
-    if (
+    const msg = (e as Error).message || String(e);
+    const isNetErr =
       msg.includes('Failed to fetch') ||
       msg.includes('ECONNREFUSED')    ||
       msg.includes('NetworkError')    ||
-      msg.includes('Load failed')
-    ) {
-      return {
-        ok       : false,
-        error    : 'Backend not reachable. Running in offline/frontend-only mode.',
-        backendUrl: syncUrl,
-      };
-    }
-    return { ok: false, error: msg, backendUrl: syncUrl };
+      msg.includes('Load failed')     ||
+      msg.includes('AbortError')      ||
+      msg.includes('timeout');
+
+    return {
+      ok       : false,
+      error    : isNetErr
+        ? 'Backend not reachable. Is the server running? Check the Backend tab.'
+        : msg,
+      backendUrl: syncUrl,
+    };
   }
 }
 
 /**
- * Check if the backend is reachable and get health status.
+ * Check if the backend is alive and return health data.
  */
 export async function checkBackendHealth(): Promise<BackendHealth | null> {
   const base = getBackendBase();
@@ -97,36 +133,7 @@ export async function checkBackendHealth(): Promise<BackendHealth | null> {
 }
 
 /**
- * Get the manifest URL — always the real backend URL.
- * In production this is the same origin as the React app.
- * In dev this points to localhost:7000.
- */
-export function getManifestUrl(): string {
-  return `${getBackendBase()}/manifest.json`;
-}
-
-/**
- * Get the Stremio deep-link install URL.
- * Stremio protocol: stremio://host/manifest.json
- * Works on Windows/Mac/Android Stremio app.
- * For Samsung TV — user must manually enter the manifest URL.
- */
-export function getStremioInstallUrl(): string {
-  const base     = getBackendBase();
-  // Strip protocol → stremio://host:port/manifest.json
-  const noProto  = base.replace(/^https?:\/\//, '');
-  return `stremio://${noProto}/manifest.json`;
-}
-
-/**
- * Get a human-readable HTTP manifest URL for copying into Stremio.
- */
-export function getHttpManifestUrl(): string {
-  return getManifestUrl();
-}
-
-/**
- * Clear the backend stream cache.
+ * Clear the backend HLS stream cache.
  */
 export async function clearBackendCache(): Promise<boolean> {
   const base = getBackendBase();

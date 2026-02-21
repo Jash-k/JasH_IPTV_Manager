@@ -25,14 +25,15 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
   const [showBulkMove, setShowBulkMove] = useState(false);
   const [dragMode,     setDragMode]     = useState(false);
 
-  // ── Drag state ────────────────────────────────────────────────────────────
-  const dragFromIdx = useRef<number | null>(null);
-  const [dragOver,   setDragOver]  = useState<number | null>(null);
-  const [dragActive, setDragActive] = useState<number | null>(null);
+  // ── Drag state (refs to avoid stale closure issues) ───────────────────────
+  const dragFromIdx    = useRef<number>(-1);
+  const [dragOverIdx,  setDragOverIdx]  = useState(-1);
+  const [dragActiveIdx,setDragActiveIdx] = useState(-1);
 
-  // ── Working list: ALL streams sorted by order (the ground truth) ─────────
-  // We operate on `streams` (full list, sorted by order) for all reorder ops.
-  // Filtering only affects what is displayed.
+  // ── Derived lists ─────────────────────────────────────────────────────────
+  // `streams` is always sorted by `order` field from the store.
+  // `filtered` is the complete filtered list (not paginated).
+  // `paginated` is just the visible slice of `filtered`.
   const filtered = useMemo(() => {
     return streams.filter(s => {
       if (search && !s.name.toLowerCase().includes(search.toLowerCase()) &&
@@ -47,8 +48,11 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
     });
   }, [streams, search, filterGroup, filterSource, filterStatus]);
 
+  // paginated shows rows 0..page*PAGE_SIZE of `filtered`
   const paginated  = useMemo(() => filtered.slice(0, page * PAGE_SIZE), [filtered, page]);
   const groupNames = useMemo(() => [...new Set(streams.map(s => s.group))].sort(), [streams]);
+
+  const isFiltered = !!(search || filterGroup || filterSource || filterStatus);
 
   // Detect duplicate names (multi-quality channels)
   const duplicateNames = useMemo(() => {
@@ -83,7 +87,7 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
 
   const handleBulkMove = async () => {
     if (!selected.size || !bulkGroup.trim()) return;
-    await bulkMoveStreams([...selected], bulkGroup);
+    await bulkMoveStreams([...selected], bulkGroup.trim());
     setSelected(new Set());
     setShowBulkMove(false);
     setBulkGroup('');
@@ -96,43 +100,54 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
   };
 
   // ── Drag-and-drop reorder ─────────────────────────────────────────────────
-  // We reorder within the `filtered` list (which respects current filters).
-  // After reorder we build a new global order: filtered items in new order,
-  // then all non-filtered items preserving their relative positions.
+  // IMPORTANT: We drag within `paginated` (what's visible) but the reorder
+  // operation must work on the complete `streams` array.
+  //
+  // Strategy:
+  //   dragFromIdx / dragOverIdx are indices into `paginated`.
+  //   On drop, we:
+  //     1. Reorder `filtered` with the two indices mapped to filtered positions
+  //     2. Build new global ID order:
+  //        - All filtered IDs in new order (splice from/to)
+  //        - All non-filtered IDs appended (preserving their relative order)
+  //     3. Call reorderStreams(newOrderedIds)
 
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    dragFromIdx.current = index;
-    setDragActive(index);
+  const handleDragStart = useCallback((e: React.DragEvent<HTMLDivElement>, paginatedIdx: number) => {
+    dragFromIdx.current = paginatedIdx;
+    setDragActiveIdx(paginatedIdx);
     e.dataTransfer.effectAllowed = 'move';
-    // Required for Firefox
-    e.dataTransfer.setData('text/plain', String(index));
-  };
+    e.dataTransfer.setData('text/plain', String(paginatedIdx));
+  }, []);
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>, paginatedIdx: number) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    setDragOver(index);
-  };
+    if (dragOverIdx !== paginatedIdx) setDragOverIdx(paginatedIdx);
+  }, [dragOverIdx]);
 
-  const handleDrop = useCallback(async (e: React.DragEvent, dropIndex: number) => {
+  const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>, dropPaginatedIdx: number) => {
     e.preventDefault();
-    const fromIndex = dragFromIdx.current;
+    const fromPaginatedIdx = dragFromIdx.current;
 
-    if (fromIndex === null || fromIndex === dropIndex) {
-      setDragActive(null);
-      setDragOver(null);
-      dragFromIdx.current = null;
-      return;
-    }
+    // Reset visual state immediately
+    setDragActiveIdx(-1);
+    setDragOverIdx(-1);
+    dragFromIdx.current = -1;
 
-    // Reorder the filtered display list
+    if (fromPaginatedIdx < 0 || fromPaginatedIdx === dropPaginatedIdx) return;
+
+    // Map paginated indices → filtered indices
+    // paginated is a slice of filtered: paginated[i] === filtered[i] (for i < page*PAGE_SIZE)
+    const fromFilteredIdx = fromPaginatedIdx;
+    const toFilteredIdx   = dropPaginatedIdx;
+
+    // Reorder the filtered array
     const newFiltered = [...filtered];
-    const [moved] = newFiltered.splice(fromIndex, 1);
-    newFiltered.splice(dropIndex, 0, moved);
+    const [moved]     = newFiltered.splice(fromFilteredIdx, 1);
+    newFiltered.splice(toFilteredIdx, 0, moved);
 
     // Build new global order:
-    // • Filtered items in their new order
-    // • Non-filtered items retain their existing relative order (appended)
+    // filtered items in new order + non-filtered items at their current positions
     const filteredIdSet = new Set(filtered.map(s => s.id));
     const nonFiltered   = streams.filter(s => !filteredIdSet.has(s.id));
     const newOrderedIds = [
@@ -141,18 +156,32 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
     ];
 
     await reorderStreams(newOrderedIds);
-    notify('Stream order saved ✓', 'success');
-
-    dragFromIdx.current = null;
-    setDragActive(null);
-    setDragOver(null);
+    notify('Stream order updated ✓', 'success');
   }, [filtered, streams, reorderStreams, notify]);
 
-  const handleDragEnd = () => {
-    dragFromIdx.current = null;
-    setDragActive(null);
-    setDragOver(null);
-  };
+  const handleDragEnd = useCallback(() => {
+    dragFromIdx.current = -1;
+    setDragActiveIdx(-1);
+    setDragOverIdx(-1);
+  }, []);
+
+  // ── Move up / down buttons (alternative to drag) ──────────────────────────
+  const moveStream = useCallback(async (paginatedIdx: number, direction: 'up' | 'down') => {
+    const targetIdx = direction === 'up' ? paginatedIdx - 1 : paginatedIdx + 1;
+    if (targetIdx < 0 || targetIdx >= filtered.length) return;
+
+    const newFiltered = [...filtered];
+    [newFiltered[paginatedIdx], newFiltered[targetIdx]] = [newFiltered[targetIdx], newFiltered[paginatedIdx]];
+
+    const filteredIdSet = new Set(filtered.map(s => s.id));
+    const nonFiltered   = streams.filter(s => !filteredIdSet.has(s.id));
+    const newOrderedIds = [
+      ...newFiltered.map(s => s.id),
+      ...nonFiltered.map(s => s.id),
+    ];
+
+    await reorderStreams(newOrderedIds);
+  }, [filtered, streams, reorderStreams]);
 
   // ── Status badge ──────────────────────────────────────────────────────────
   const statusBadge = (s: Stream) => {
@@ -209,8 +238,11 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
 
         <div className="flex items-center justify-between flex-wrap gap-2">
           <span className="text-sm text-gray-400">
-            Showing {paginated.length.toLocaleString()} of {filtered.length.toLocaleString()} streams
-            {duplicateNames.size > 0 && (
+            {dragMode
+              ? `Reorder mode — showing ${paginated.length.toLocaleString()} of ${filtered.length.toLocaleString()} streams`
+              : `Showing ${paginated.length.toLocaleString()} of ${filtered.length.toLocaleString()} streams`
+            }
+            {duplicateNames.size > 0 && !dragMode && (
               <span className="ml-2 text-blue-400 text-xs">
                 · {duplicateNames.size} multi-quality channel{duplicateNames.size > 1 ? 's' : ''}
               </span>
@@ -223,12 +255,11 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
               className={cn(
                 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all',
                 dragMode
-                  ? 'bg-orange-500/20 border-orange-500/50 text-orange-300'
-                  : 'bg-gray-700 border-gray-600 text-gray-400 hover:text-white'
+                  ? 'bg-orange-500/20 border-orange-500/50 text-orange-300 shadow-orange-500/20 shadow-sm'
+                  : 'bg-gray-700 border-gray-600 text-gray-400 hover:text-orange-300 hover:border-orange-500/50'
               )}
-              title="Toggle drag-and-drop reordering"
             >
-              ↕ {dragMode ? 'Reorder ON' : 'Reorder'}
+              ↕ {dragMode ? 'Exit Reorder' : 'Reorder Mode'}
             </button>
             {!dragMode && (
               <button
@@ -241,13 +272,17 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
           </div>
         </div>
 
+        {/* Reorder mode hint */}
         {dragMode && (
           <div className="bg-orange-900/20 border border-orange-700/30 rounded-lg px-4 py-2.5 text-xs text-orange-300 flex items-center gap-2">
             <span>↕️</span>
-            <span>
-              Drag the <strong>⠿</strong> handle to reorder · Order is saved to DB and preserved in M3U export &amp; Stremio catalog
-              {(search || filterGroup || filterSource || filterStatus) && (
-                <span className="text-orange-400 ml-1">· Reorder applies within current filter</span>
+            <span className="flex-1">
+              <strong>Drag the ⠿ handle</strong> to reorder streams, or use <strong>▲ ▼</strong> buttons.
+              Order saves to DB and exports to M3U in this order.
+              {isFiltered && (
+                <span className="text-orange-400/80 ml-1">
+                  · Active filters — reorder applies within filtered results only
+                </span>
               )}
             </span>
           </div>
@@ -312,37 +347,61 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
           </div>
         )}
 
-        {paginated.map((stream, index) => {
-          const isDupeKey     = `${stream.group}||${stream.name}`;
+        {paginated.map((stream, pIdx) => {
+          const isDupeKey      = `${stream.group}||${stream.name}`;
           const isMultiQuality = duplicateNames.has(isDupeKey);
-          const isDragging    = dragActive === index;
-          const isDropTarget  = dragOver === index && dragActive !== index;
+          const isDragging     = dragActiveIdx === pIdx;
+          const isDropTarget   = dragOverIdx   === pIdx && dragActiveIdx !== pIdx;
 
           return (
             <div
               key={stream.id}
               draggable={dragMode}
-              onDragStart={dragMode ? e => handleDragStart(e, index) : undefined}
-              onDragOver={dragMode  ? e => handleDragOver(e, index)  : undefined}
-              onDrop={dragMode      ? e => handleDrop(e, index)      : undefined}
+              onDragStart={dragMode ? e => handleDragStart(e, pIdx) : undefined}
+              onDragOver={dragMode  ? e => handleDragOver(e, pIdx)  : undefined}
+              onDrop={dragMode      ? e => handleDrop(e, pIdx)      : undefined}
               onDragEnd={dragMode   ? handleDragEnd                  : undefined}
               className={cn(
-                'flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2.5 border transition-all select-none',
-                selected.has(stream.id) ? 'border-purple-600/70 bg-purple-900/20' : 'border-gray-700/50 hover:border-gray-600/70',
+                'flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2.5 border transition-all',
+                selected.has(stream.id)
+                  ? 'border-purple-600/70 bg-purple-900/20'
+                  : 'border-gray-700/50 hover:border-gray-600/70',
                 !stream.enabled && 'opacity-50',
-                dragMode && !isDragging && 'cursor-default',
-                isDragging && 'opacity-30 scale-[0.97] border-dashed border-gray-500',
-                isDropTarget && 'border-orange-400/70 bg-orange-900/10 scale-[1.005] shadow-lg shadow-orange-500/10',
+                isDragging   && 'opacity-20 scale-[0.97] border-dashed border-orange-500/50 bg-orange-900/10',
+                isDropTarget && 'border-orange-400 bg-orange-900/20 scale-[1.01] shadow-lg shadow-orange-500/20',
+                dragMode && !isDragging && !isDropTarget && 'hover:border-orange-500/30',
               )}
             >
               {/* Drag handle OR checkbox */}
               {dragMode ? (
-                <span
-                  className="text-gray-500 hover:text-orange-300 cursor-grab active:cursor-grabbing flex-shrink-0 select-none text-xl leading-none px-1"
-                  onMouseDown={e => e.currentTarget.parentElement?.setAttribute('draggable', 'true')}
-                >
-                  ⠿
-                </span>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {/* Up/Down buttons */}
+                  <div className="flex flex-col gap-0.5">
+                    <button
+                      onClick={() => moveStream(pIdx, 'up')}
+                      disabled={pIdx === 0}
+                      className="text-gray-600 hover:text-orange-300 disabled:opacity-20 disabled:cursor-not-allowed text-xs leading-none px-1 py-0.5 hover:bg-orange-500/10 rounded transition-all"
+                      title="Move up"
+                    >▲</button>
+                    <button
+                      onClick={() => moveStream(pIdx, 'down')}
+                      disabled={pIdx === paginated.length - 1}
+                      className="text-gray-600 hover:text-orange-300 disabled:opacity-20 disabled:cursor-not-allowed text-xs leading-none px-1 py-0.5 hover:bg-orange-500/10 rounded transition-all"
+                      title="Move down"
+                    >▼</button>
+                  </div>
+                  {/* Drag handle */}
+                  <span
+                    className="text-gray-500 hover:text-orange-300 cursor-grab active:cursor-grabbing select-none text-xl leading-none px-1"
+                    title="Drag to reorder"
+                  >
+                    ⠿
+                  </span>
+                  {/* Position number */}
+                  <span className="text-gray-700 text-xs w-8 text-right flex-shrink-0">
+                    #{pIdx + 1}
+                  </span>
+                </div>
               ) : (
                 <input
                   type="checkbox"
@@ -378,6 +437,11 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
                       Multi-Q
                     </span>
                   )}
+                  {!stream.enabled && (
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-500 flex-shrink-0">
+                      off
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="text-xs text-purple-400 truncate max-w-[120px]">{stream.group}</span>
@@ -392,9 +456,6 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 {stream.responseTime && (
                   <span className="text-xs text-gray-600 hidden sm:block">{stream.responseTime}ms</span>
-                )}
-                {dragMode && (
-                  <span className="text-gray-700 text-xs hidden sm:block">#{index + 1}</span>
                 )}
                 {!dragMode && (
                   <>
@@ -419,6 +480,7 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
           );
         })}
 
+        {/* Load more */}
         {paginated.length < filtered.length && (
           <div className="text-center pt-4">
             <button
@@ -439,10 +501,9 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
           </h4>
           <p className="text-blue-200/70 text-xs leading-relaxed">
             <strong>{duplicateNames.size}</strong> channel{duplicateNames.size > 1 ? 's have' : ' has'} multiple
-            entries with the same name in the same group. In Stremio these appear as <strong>one channel entry</strong>
+            entries with the same name in the same group. In Stremio these appear as <strong>one channel entry</strong>{' '}
             with multiple quality options on the stream selection screen.
             The backend HLS extractor handles each quality variant separately.
-            Toggle <strong>Combine Multi-Quality</strong> in Settings to control this.
           </p>
         </div>
       )}
@@ -502,13 +563,13 @@ export const StreamsTab: React.FC<Props> = ({ store }) => {
                   onClick={() => setEditStream({ ...editStream, enabled: !editStream.enabled })}
                   className={cn('w-10 h-6 rounded-full transition-colors relative', editStream.enabled ? 'bg-purple-600' : 'bg-gray-600')}
                 >
-                  <span className={cn('absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow', editStream.enabled ? 'left-4' : 'left-0.5')} />
+                  <span className={cn('absolute top-0.5 w-5 h-5 bg-white rounded-full transition-all shadow', editStream.enabled ? 'left-4' : 'left-0.5')} />
                 </button>
               </div>
             </div>
             <div className="flex gap-3">
               <button
-                onClick={async () => { await updateStream(editStream); setEditStream(null); }}
+                onClick={async () => { await updateStream(editStream); setEditStream(null); notify('Stream updated ✓', 'success'); }}
                 className="flex-1 bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-medium text-sm transition-colors"
               >
                 ✓ Save Changes
