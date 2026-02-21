@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════╗
- * ║           JASH ADDON — Backend Server v6.0                               ║
+ * ║           JASH ADDON — Backend Server v7.0                               ║
  * ║   Stremio IPTV Addon · Samsung Tizen HLS Extraction Engine              ║
  * ╠═══════════════════════════════════════════════════════════════════════════╣
- * ║  ARCHITECTURE:                                                           ║
- * ║  • Reads streams-config.json on EVERY request (always fresh)            ║
- * ║  • Works immediately on first deploy — no sync needed                   ║
- * ║  • Sync from frontend just writes the JSON file                         ║
- * ║  • Multi-quality streams → combined into one catalog entry              ║
- * ║  • Custom combined streams → one entry with manual name                 ║
- * ║  • Alphabetical sort within groups                                      ║
- * ║  • Full HLS master→variant→segment extraction (Samsung Tizen fix)       ║
+ * ║  KEY FIXES v7.0:                                                         ║
+ * ║  • Stremio-compliant manifest (semantic version, no transportUrl)        ║
+ * ║  • Correct idPrefixes matching actual stream IDs                        ║
+ * ║  • Proper catalog/stream ID encoding (no colon issues)                  ║
+ * ║  • Config file mtime → semantic version string (1.X.Y format)           ║
+ * ║  • Stream handler reads config fresh on every request                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -27,7 +25,7 @@ const DEBUG       = process.env.DEBUG === 'true';
 const PUBLIC_URL  = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 const DIST_DIR    = path.join(__dirname, '..', 'dist');
 const CFG_FILE    = path.join(__dirname, 'streams-config.json');
-const REQ_TIMEOUT = 12000;
+const REQ_TIMEOUT = 15000;
 const CACHE_TTL   = 5 * 60 * 1000; // 5 min
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
@@ -48,9 +46,10 @@ function getCached(k) {
 function setCache(k, v) { streamCache.set(k, { url: v, ts: Date.now() }); }
 
 // ─── ID helpers ───────────────────────────────────────────────────────────────
-const encodeId = (u) => Buffer.from(u).toString('base64url');
+// Use base64url encoding so IDs are URL-safe and contain no special characters
+const encodeId = (u) => Buffer.from(u, 'utf8').toString('base64url');
 const decodeId = (s) => {
-  try { return Buffer.from(s, 'base64url').toString('utf8'); }
+  try { return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64url').toString('utf8'); }
   catch { return ''; }
 };
 
@@ -64,7 +63,14 @@ function loadConfig() {
       return { streams: [], groups: [], combinedChannels: [], settings: defaultSettings() };
     }
     const raw = fs.readFileSync(CFG_FILE, 'utf8');
-    return JSON.parse(raw);
+    const cfg = JSON.parse(raw);
+    // Ensure all required keys exist
+    return {
+      streams         : cfg.streams          || [],
+      groups          : cfg.groups           || [],
+      combinedChannels: cfg.combinedChannels || [],
+      settings        : { ...defaultSettings(), ...(cfg.settings || {}) },
+    };
   } catch (e) {
     error('loadConfig:', e.message);
     return { streams: [], groups: [], combinedChannels: [], settings: defaultSettings() };
@@ -80,86 +86,64 @@ function defaultSettings() {
   };
 }
 
-/**
- * Get all enabled streams, sorted by:
- *  1. Manual order (order field) if sortAlphabetically is OFF
- *  2. Group title A→Z then Channel name A→Z if sortAlphabetically is ON
- */
-function getEnabledStreams() {
-  const cfg      = loadConfig();
-  const settings = cfg.settings || defaultSettings();
-  const streams  = (cfg.streams || []).filter(s => s.enabled !== false);
-
-  if (settings.sortAlphabetically) {
-    return streams.sort((a, b) => {
-      const ga = (a.group || 'Uncategorized').toLowerCase();
-      const gb = (b.group || 'Uncategorized').toLowerCase();
-      if (ga < gb) return -1;
-      if (ga > gb) return  1;
-      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
-    });
-  }
-
-  // Manual order
-  return streams.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-}
-
-/**
- * Get groups — from config or derived from streams.
- * Always sorted alphabetically by group name.
- */
-function getGroups() {
-  const cfg     = loadConfig();
-  const streams = getEnabledStreams();
-
-  if (cfg.groups && cfg.groups.length) {
-    return cfg.groups
-      .filter(g => g.enabled !== false && streams.some(s => (s.group || 'Uncategorized') === g.name))
-      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-  }
-
-  // Derive from streams
-  const seen = new Set();
-  const out  = [];
-  for (const s of streams) {
-    const g = s.group || 'Uncategorized';
-    if (!seen.has(g)) { seen.add(g); out.push({ id: `g_${out.length}`, name: g }); }
-  }
-  return out.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-}
-
 function getSettings() {
   return { ...defaultSettings(), ...(loadConfig().settings || {}) };
 }
 
-/**
- * Get custom combined channels — streams manually combined under one name.
- * Returns array of: { id, name, group, logo, streamUrls: [url, ...] }
- */
+// ─── Get enabled streams sorted ────────────────────────────────────────────────
+function getEnabledStreams() {
+  const cfg      = loadConfig();
+  const settings = cfg.settings;
+  const streams  = cfg.streams.filter(s => s.enabled !== false);
+
+  if (settings.sortAlphabetically) {
+    return [...streams].sort((a, b) => {
+      const ga = (a.group || 'Uncategorized').toLowerCase();
+      const gb = (b.group || 'Uncategorized').toLowerCase();
+      if (ga !== gb) return ga < gb ? -1 : 1;
+      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    });
+  }
+  return [...streams].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+// ─── Get groups sorted alphabetically ─────────────────────────────────────────
+function getGroups() {
+  const cfg     = loadConfig();
+  const streams = getEnabledStreams();
+
+  // Derive groups from actual streams that exist
+  const groupNames = [...new Set(streams.map(s => s.group || 'Uncategorized'))];
+  groupNames.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+  // Try to match with stored groups for extra metadata
+  const storedMap = new Map((cfg.groups || []).map(g => [g.name, g]));
+
+  return groupNames.map((name, idx) => ({
+    id      : storedMap.get(name)?.id || `grp_${idx}`,
+    name,
+    enabled : storedMap.get(name)?.enabled !== false,
+  })).filter(g => g.enabled);
+}
+
+// ─── Get combined channels ────────────────────────────────────────────────────
 function getCombinedChannels() {
   const cfg = loadConfig();
   return (cfg.combinedChannels || []).filter(c => c.enabled !== false);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// CHANNEL GROUPING — for multi-quality support
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Group streams by name+group into channel entries.
- * Each channel entry may have multiple quality streams.
- * Returns Map<key, { id, name, group, logo, streams[] }>
- */
+// ─── Group streams by channel (for multi-quality) ─────────────────────────────
 function groupByChannel(streams, combineMultiQuality) {
   const map = new Map();
 
   for (const s of streams) {
     const group = s.group || 'Uncategorized';
-    const key   = combineMultiQuality ? `${group}||${s.name}` : s.id;
+    // Key: if combining, use name+group; else use unique stream ID
+    const key = combineMultiQuality ? `${group}::${s.name}` : s.id;
 
     if (!map.has(key)) {
       map.set(key, {
-        id     : 'jash:' + encodeId(s.url),  // Primary stream URL as ID
+        id     : 'jash' + encodeId(s.url), // e.g. jashABCDEF123...
         name   : s.name,
         group,
         logo   : s.logo  || '',
@@ -174,7 +158,7 @@ function groupByChannel(streams, combineMultiQuality) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MANIFEST — built dynamically on each request, always reflects current config
+// MANIFEST — Stremio-compliant
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildManifest() {
@@ -182,17 +166,23 @@ function buildManifest() {
   const groups    = getGroups();
   const streams   = getEnabledStreams();
   const combined  = getCombinedChannels();
-  const addonId   = settings.addonId   || 'jash-iptv-addon';
+  const addonId   = (settings.addonId || 'jash-iptv-addon').replace(/[^a-z0-9\-_.]/gi, '-');
   const addonName = settings.addonName || 'Jash IPTV';
 
-  // Version is based on config file mtime — changes whenever config is written
-  let version = '2.0';
+  // ── Semantic version from config file mtime ──────────────────────────────
+  // Stremio requires "X.Y.Z" format. We use 1.TIMESTAMP format.
+  let version = '1.0.0';
   try {
-    const stat = fs.statSync(CFG_FILE);
-    version = `2.${Math.floor(stat.mtimeMs / 1000)}`;
-  } catch { /* first run, no file yet */ }
+    const stat   = fs.statSync(CFG_FILE);
+    const secs   = Math.floor(stat.mtimeMs / 1000);
+    // Convert to 1.XXXXX.YYYYY (split timestamp into two parts for semver)
+    const major  = 1;
+    const minor  = Math.floor(secs / 100000);
+    const patch  = secs % 100000;
+    version      = `${major}.${minor}.${patch}`;
+  } catch { /* no config file yet → use 1.0.0 */ }
 
-  // Build catalogs: one per group (alphabetically sorted)
+  // ── Catalogs: one per group ──────────────────────────────────────────────
   const catalogs = groups.map((g, i) => ({
     type : 'tv',
     id   : `jash_cat_${i}`,
@@ -200,18 +190,18 @@ function buildManifest() {
     extra: [{ name: 'search', isRequired: false }],
   }));
 
-  // Add combined channels catalog if any exist
+  // Combined channels catalog (if any)
   if (combined.length > 0) {
     catalogs.push({
       type : 'tv',
-      id   : 'jash_cat_combined',
+      id   : 'jash_combined',
       name : '⭐ Combined Channels',
       extra: [{ name: 'search', isRequired: false }],
     });
   }
 
-  // Fallback placeholder so Stremio accepts the manifest even with no streams
-  if (!catalogs.length) {
+  // Fallback so Stremio accepts the manifest with 0 streams
+  if (catalogs.length === 0) {
     catalogs.push({
       type : 'tv',
       id   : 'jash_cat_default',
@@ -220,16 +210,18 @@ function buildManifest() {
     });
   }
 
-  return {
-    id           : addonId,
+  // ── Manifest object ───────────────────────────────────────────────────────
+  // NOTE: No "transportUrl" field — Stremio doesn't need it and it can cause
+  //       validation failures. The manifest URL IS the install URL.
+  const manifest = {
+    id          : addonId,
     version,
-    name         : addonName,
-    description  : `${addonName} · Samsung Tizen Optimized IPTV · ${streams.length} channels · HLS Extraction`,
-    logo         : `${PUBLIC_URL}/favicon.ico`,
-    transportUrl : `${PUBLIC_URL}/manifest.json`,
-    resources    : ['catalog', 'meta', 'stream'],
-    types        : ['tv'],
-    idPrefixes   : ['jash:'],
+    name        : addonName,
+    description : `${addonName} · ${streams.length} channels · Samsung Tizen Optimized · HLS Extraction`,
+    logo        : `${PUBLIC_URL}/logo.png`,
+    resources   : ['catalog', 'meta', 'stream'],
+    types       : ['tv'],
+    idPrefixes  : ['jash'],          // ← must match the start of all stream IDs
     catalogs,
     behaviorHints: {
       adult                : false,
@@ -239,6 +231,8 @@ function buildManifest() {
     },
     configurationURL: `${PUBLIC_URL}/`,
   };
+
+  return manifest;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -251,46 +245,51 @@ function handleCatalog(catId, extra) {
   const settings = getSettings();
   const combined = getCombinedChannels();
 
-  // ── Combined channels catalog ─────────────────────────────────────────────
-  if (catId === 'jash_cat_combined') {
-    let list = combined;
-    if (extra && extra.search) {
-      const q = extra.search.toLowerCase();
-      list    = list.filter(c => c.name.toLowerCase().includes(q));
-    }
+  const searchQ = (extra && extra.search) ? extra.search.toLowerCase().trim() : '';
+
+  // ── Combined channels ─────────────────────────────────────────────────────
+  if (catId === 'jash_combined') {
+    let list = searchQ
+      ? combined.filter(c => c.name.toLowerCase().includes(searchQ))
+      : combined;
+
     const metas = list.map(c => ({
-      id         : `jash:combined:${c.id}`,
+      id         : `jashcombined${c.id}`,
       type       : 'tv',
       name       : c.name,
       poster     : c.logo || null,
       background : c.logo || null,
       logo       : c.logo || null,
-      description: `${c.group || 'Combined'} · ${c.streamUrls.length} stream${c.streamUrls.length > 1 ? 's' : ''}`,
+      description: `${c.group || 'Combined'} · ${c.streamUrls.length} stream${c.streamUrls.length !== 1 ? 's' : ''}`,
       genres     : [c.group || 'Combined'],
     }));
-    debug(`[CATALOG] Combined → ${metas.length} channels`);
+    debug(`[CATALOG] Combined → ${metas.length} entries`);
     return { metas };
   }
 
-  // ── Normal group catalog ──────────────────────────────────────────────────
-  let group;
-  const idxMatch = catId.match(/^jash_cat_(\d+)$/);
-  if (idxMatch) {
-    group = groups[parseInt(idxMatch[1], 10)];
-  } else {
-    group = groups.find(g => g.id === catId || g.name === catId);
+  // ── Default placeholder catalog ───────────────────────────────────────────
+  if (catId === 'jash_cat_default') {
+    return { metas: [] };
   }
 
+  // ── Normal group catalog ──────────────────────────────────────────────────
+  const idxMatch = catId.match(/^jash_cat_(\d+)$/);
+  if (!idxMatch) {
+    debug(`[CATALOG] Unknown catId: ${catId}`);
+    return { metas: [] };
+  }
+
+  const groupIdx = parseInt(idxMatch[1], 10);
+  const group    = groups[groupIdx];
+
   if (!group) {
-    debug(`[CATALOG] Unknown catId: ${catId} (groups: ${groups.map(g => g.id).join(', ')})`);
+    debug(`[CATALOG] No group at index ${groupIdx} (${groups.length} groups total)`);
     return { metas: [] };
   }
 
   let list = streams.filter(s => (s.group || 'Uncategorized') === group.name);
-
-  if (extra && extra.search) {
-    const q = extra.search.toLowerCase();
-    list    = list.filter(s => s.name.toLowerCase().includes(q));
+  if (searchQ) {
+    list = list.filter(s => s.name.toLowerCase().includes(searchQ));
   }
 
   const channelMap = groupByChannel(list, settings.combineMultiQuality !== false);
@@ -299,15 +298,14 @@ function handleCatalog(catId, extra) {
   for (const ch of channelMap.values()) {
     const qualityNote = ch.streams.length > 1 ? ` · ${ch.streams.length} quality options` : '';
     metas.push({
-      id          : ch.id,
-      type        : 'tv',
-      name        : ch.name,
-      poster      : ch.logo || null,
-      background  : ch.logo || null,
-      logo        : ch.logo || null,
-      description : `${ch.group}${qualityNote}`,
-      genres      : [ch.group],
-      behaviorHints: { defaultVideoId: ch.id },
+      id         : ch.id,
+      type       : 'tv',
+      name       : ch.name,
+      poster     : ch.logo || null,
+      background : ch.logo || null,
+      logo       : ch.logo || null,
+      description: `${ch.group}${qualityNote}`,
+      genres     : [ch.group],
     });
   }
 
@@ -321,87 +319,117 @@ function handleCatalog(catId, extra) {
 
 function handleMeta(rawId) {
   let id = rawId;
-  try { id = decodeURIComponent(rawId); } catch { /* keep as-is */ }
+  try { id = decodeURIComponent(rawId); } catch { /* keep */ }
 
-  // Combined channel meta
-  if (id.startsWith('jash:combined:')) {
-    const cId     = id.replace('jash:combined:', '');
+  // Combined channel
+  if (id.startsWith('jashcombined')) {
+    const cId      = id.replace('jashcombined', '');
     const combined = getCombinedChannels();
-    const c       = combined.find(ch => ch.id === cId);
+    const c        = combined.find(ch => ch.id === cId);
     if (!c) return { meta: null };
     return {
       meta: {
         id,
-        type        : 'tv',
-        name        : c.name,
-        poster      : c.logo || null,
-        logo        : c.logo || null,
-        description : `${c.group || 'Combined'} · ${c.streamUrls.length} streams`,
-        genres      : [c.group || 'Combined'],
-        releaseInfo : 'LIVE',
+        type       : 'tv',
+        name       : c.name,
+        poster     : c.logo || null,
+        logo       : c.logo || null,
+        description: `${c.group || 'Combined'} · ${c.streamUrls.length} streams`,
+        genres     : [c.group || 'Combined'],
+        releaseInfo: 'LIVE',
       },
     };
   }
 
-  // Normal stream meta
-  const rawUrl = decodeId(id.replace('jash:', ''));
-  const all    = getEnabledStreams();
-  const s      = all.find(st => st.url === rawUrl) || all.find(st => st.url.startsWith(rawUrl.slice(0, 40)));
+  // Normal stream — decode the base64url part after "jash"
+  const encodedUrl = id.replace(/^jash/, '');
+  const streamUrl  = decodeId(encodedUrl);
 
-  if (!s) return { meta: null };
+  if (!streamUrl) {
+    debug(`[META] Could not decode ID: ${id}`);
+    return { meta: null };
+  }
+
+  const all = getEnabledStreams();
+  const s   = all.find(st => st.url === streamUrl)
+           || all.find(st => st.url.startsWith(streamUrl.slice(0, 40)));
+
+  if (!s) {
+    debug(`[META] Stream not found for URL: ${streamUrl.slice(0, 60)}`);
+    return { meta: null };
+  }
 
   return {
     meta: {
       id,
-      type        : 'tv',
-      name        : s.name,
-      poster      : s.logo || null,
-      background  : s.logo || null,
-      logo        : s.logo || null,
-      description : `Group: ${s.group || 'Uncategorized'}`,
-      genres      : [s.group || 'Uncategorized'],
-      releaseInfo : 'LIVE',
+      type       : 'tv',
+      name       : s.name,
+      poster     : s.logo || null,
+      background : s.logo || null,
+      logo       : s.logo || null,
+      description: `Group: ${s.group || 'Uncategorized'}`,
+      genres     : [s.group || 'Uncategorized'],
+      releaseInfo: 'LIVE',
     },
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STREAM HANDLER — Core HLS Extraction (Samsung Tizen Fix)
+// STREAM HANDLER — Samsung Tizen HLS Extraction
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function handleStream(rawId) {
   let id = rawId;
-  try { id = decodeURIComponent(rawId); } catch { /* keep as-is */ }
+  try { id = decodeURIComponent(rawId); } catch { /* keep */ }
 
   const settings  = getSettings();
   const addonName = settings.addonName || 'Jash IPTV';
 
+  debug(`[STREAM] id=${id}`);
+
   // ── Combined channel ───────────────────────────────────────────────────────
-  if (id.startsWith('jash:combined:')) {
-    const cId     = id.replace('jash:combined:', '');
+  if (id.startsWith('jashcombined')) {
+    const cId      = id.replace('jashcombined', '');
     const combined = getCombinedChannels();
-    const c       = combined.find(ch => ch.id === cId);
+    const c        = combined.find(ch => ch.id === cId);
 
-    if (!c || !c.streamUrls || !c.streamUrls.length) return { streams: [] };
+    if (!c || !c.streamUrls || !c.streamUrls.length) {
+      debug(`[STREAM] Combined channel not found: ${cId}`);
+      return { streams: [] };
+    }
 
-    log(`[STREAM] Combined channel: "${c.name}" (${c.streamUrls.length} streams)`);
+    log(`[STREAM] Combined: "${c.name}" (${c.streamUrls.length} streams)`);
     return resolveAndReturn(
-      c.streamUrls.map((url, i) => ({ name: c.streamUrls.length > 1 ? `${c.name} #${i + 1}` : c.name, url })),
+      c.streamUrls.map((url, i) => ({
+        name: c.streamUrls.length > 1 ? `${c.name} Stream ${i + 1}` : c.name,
+        url,
+      })),
       addonName
     );
   }
 
   // ── Normal channel ─────────────────────────────────────────────────────────
-  if (!id.startsWith('jash:')) return { streams: [] };
+  if (!id.startsWith('jash')) {
+    debug(`[STREAM] ID does not start with "jash": ${id}`);
+    return { streams: [] };
+  }
 
-  const primaryUrl = decodeId(id.replace('jash:', ''));
-  if (!primaryUrl) return { streams: [] };
+  const encodedUrl = id.replace(/^jash/, '');
+  const primaryUrl = decodeId(encodedUrl);
+
+  if (!primaryUrl) {
+    error(`[STREAM] Failed to decode stream URL from ID: ${id}`);
+    return { streams: [] };
+  }
+
+  debug(`[STREAM] Primary URL: ${primaryUrl.slice(0, 80)}`);
 
   const all     = getEnabledStreams();
   const primary = all.find(s => s.url === primaryUrl);
 
   if (!primary) {
-    log(`[STREAM] Not in config — serving directly: ${primaryUrl.slice(0, 60)}`);
+    // URL not in config but ID is valid — serve directly
+    log(`[STREAM] URL not in config, serving directly: ${primaryUrl.slice(0, 60)}`);
     return resolveAndReturn([{ name: 'Live', url: primaryUrl }], addonName);
   }
 
@@ -410,10 +438,11 @@ async function handleStream(rawId) {
     ? all.filter(s => s.name === primary.name && (s.group || '') === (primary.group || ''))
     : [primary];
 
-  log(`[STREAM] "${primary.name}" — ${variants.length} variant(s) in "${primary.group}"`);
-  return resolveAndReturn(variants, addonName);
+  log(`[STREAM] "${primary.name}" → ${variants.length} variant(s) in "${primary.group}"`);
+  return resolveAndReturn(variants.map(v => ({ name: v.name, url: v.url })), addonName);
 }
 
+// ─── Resolve all variants and return stream objects ────────────────────────────
 async function resolveAndReturn(variants, addonName) {
   const results = [];
 
@@ -427,8 +456,8 @@ async function resolveAndReturn(variants, addonName) {
         behaviorHints: { notWebReady: true },
       });
     } catch (e) {
-      error(`[STREAM] Resolve failed for ${v.url.slice(0, 50)}:`, e.message);
-      // Fallback — still return original URL so Stremio can try
+      error(`[STREAM] Resolve error for ${v.url.slice(0, 50)}:`, e.message);
+      // Always return a fallback so Stremio has something to try
       results.push({
         url          : v.url,
         title        : `🔴 ${v.name} (Fallback)`,
@@ -446,17 +475,17 @@ async function resolveAndReturn(variants, addonName) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function resolveStreamUrl(playlistUrl) {
-  // Cache check
+  // 1. Cache check
   const cached = getCached(playlistUrl);
   if (cached) {
-    log(`[STREAM] ⚡ Cache hit: ${playlistUrl.slice(0, 50)}`);
+    log(`[HLS] ⚡ Cache hit: ${playlistUrl.slice(0, 50)}`);
     return { url: cached };
   }
 
-  // Only run HLS extraction on HLS streams
+  // 2. Only extract from HLS URLs
   const isHLS =
-    playlistUrl.includes('.m3u8') ||
-    playlistUrl.includes('.m3u')  ||
+    playlistUrl.includes('.m3u8')    ||
+    playlistUrl.includes('.m3u')     ||
     playlistUrl.includes('/playlist') ||
     playlistUrl.includes('play.m3u') ||
     playlistUrl.includes('index.m3u') ||
@@ -464,35 +493,35 @@ async function resolveStreamUrl(playlistUrl) {
     playlistUrl.includes('/hls/');
 
   if (!isHLS) {
-    debug(`[STREAM] Direct (non-HLS): ${playlistUrl.slice(0, 60)}`);
+    debug(`[HLS] Direct (non-HLS): ${playlistUrl.slice(0, 60)}`);
     return { url: playlistUrl };
   }
 
-  log(`[STREAM] Fetching HLS playlist: ${playlistUrl.slice(0, 70)}…`);
+  log(`[HLS] Fetching playlist: ${playlistUrl.slice(0, 70)}…`);
 
   let content;
   try {
     content = await fetchPlaylist(playlistUrl);
   } catch (e) {
-    log(`[STREAM] Fetch failed (${e.message}) — using original URL as fallback`);
+    log(`[HLS] Fetch failed (${e.message}) — using original URL`);
     return { url: playlistUrl };
   }
 
-  log(`[STREAM] Playlist fetched (${content.length} bytes)`);
+  log(`[HLS] Playlist fetched (${content.length} bytes)`);
 
   if (!content.includes('#EXTM3U') && !content.includes('#EXT-X-')) {
-    debug('[STREAM] Not an M3U8 response — treating as direct stream');
+    debug('[HLS] Not M3U8 — treating as direct');
     return { url: playlistUrl };
   }
 
   const realUrl = extractRealStreamUrl(content, playlistUrl);
 
   if (!realUrl) {
-    log('[STREAM] extractRealStreamUrl returned null — using original playlist URL');
+    log('[HLS] No real URL extracted — using original');
     return { url: playlistUrl };
   }
 
-  log(`[STREAM] ✅ Real URL: ${realUrl.slice(0, 70)}…`);
+  log(`[HLS] ✅ Resolved: ${realUrl.slice(0, 70)}…`);
   setCache(playlistUrl, realUrl);
   return { url: realUrl };
 }
@@ -500,14 +529,15 @@ async function resolveStreamUrl(playlistUrl) {
 /**
  * extractRealStreamUrl — Samsung Tizen HLS fix.
  *
- * This is your exact working algorithm:
- *   Master playlist → sort variants by BANDWIDTH → pick MIDDLE index
- *   Media playlist  → return first .ts/.m4s segment URL
+ * Master playlist:
+ *   → Parse all #EXT-X-STREAM-INF variants
+ *   → Sort by BANDWIDTH descending
+ *   → Select MIDDLE index (stability sweet spot for Samsung TVs)
+ *   → Resolve relative URL
  *
- * WHY MIDDLE?
- *   Highest bandwidth → Samsung TV buffers (max bitrate too heavy)
- *   Lowest bandwidth  → Poor video quality
- *   Middle bandwidth  → Best stability + quality balance on Tizen
+ * Media playlist:
+ *   → Find first .ts/.m4s/.mp4 segment URL
+ *   → Resolve relative URL
  */
 function extractRealStreamUrl(m3u8Content, baseUrl) {
   try {
@@ -515,7 +545,7 @@ function extractRealStreamUrl(m3u8Content, baseUrl) {
     const isMaster = lines.some(l => l.includes('#EXT-X-STREAM-INF'));
 
     if (isMaster) {
-      debug('[EXTRACT] Master playlist detected');
+      debug('[EXTRACT] Master playlist');
       const variants = [];
 
       for (let i = 0; i < lines.length; i++) {
@@ -536,18 +566,17 @@ function extractRealStreamUrl(m3u8Content, baseUrl) {
       }
 
       if (!variants.length) {
-        debug('[EXTRACT] No variants found in master playlist');
+        debug('[EXTRACT] No variants in master playlist');
         return null;
       }
 
-      // Sort by bandwidth descending (highest first)
+      // Sort highest bandwidth first
       variants.sort((a, b) => b.bandwidth - a.bandwidth);
 
       // ★ KEY: Pick MIDDLE quality for Samsung TV stability
       const idx      = Math.floor(variants.length / 2);
       const selected = variants[idx];
-
-      debug(`[EXTRACT] ${variants.length} variants → selected [${idx}] ${selected.resolution} @ ${selected.bandwidth}bps`);
+      debug(`[EXTRACT] ${variants.length} variants → [${idx}] ${selected.resolution} @ ${selected.bandwidth}bps`);
 
       // Resolve relative URL
       let vUrl = selected.url;
@@ -557,9 +586,8 @@ function extractRealStreamUrl(m3u8Content, baseUrl) {
       return vUrl;
 
     } else {
-      // Media playlist — find first segment URL
-      debug('[EXTRACT] Media playlist detected');
-
+      // Media playlist
+      debug('[EXTRACT] Media playlist');
       for (const line of lines) {
         if (line.startsWith('#')) continue;
         if (
@@ -571,12 +599,11 @@ function extractRealStreamUrl(m3u8Content, baseUrl) {
           if (!segUrl.startsWith('http')) {
             segUrl = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1) + line;
           }
-          debug(`[EXTRACT] Segment found: ${segUrl.slice(0, 70)}`);
+          debug(`[EXTRACT] Segment: ${segUrl.slice(0, 70)}`);
           return segUrl;
         }
       }
-
-      debug('[EXTRACT] No segments found in media playlist');
+      debug('[EXTRACT] No segments found');
       return null;
     }
   } catch (e) {
@@ -586,20 +613,20 @@ function extractRealStreamUrl(m3u8Content, baseUrl) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FETCH PLAYLIST — with Samsung Tizen User-Agent & redirect following
+// FETCH PLAYLIST — Samsung Tizen User-Agent + redirect following
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function fetchPlaylist(playlistUrl, redirectCount = 0) {
+function fetchPlaylist(playlistUrl, redirectCount) {
+  redirectCount = redirectCount || 0;
   return new Promise((resolve, reject) => {
     if (redirectCount > 5) return reject(new Error('Too many redirects'));
 
     let parsed;
     try { parsed = new urlMod.URL(playlistUrl); }
-    catch (e) { return reject(new Error(`Invalid URL: ${playlistUrl}`)); }
+    catch (e) { return reject(new Error('Invalid URL: ' + playlistUrl)); }
 
-    const lib      = parsed.protocol === 'https:' ? https : http;
-    let   timedOut = false;
-    const timeout  = setTimeout(() => { timedOut = true; reject(new Error('Request timeout')); }, REQ_TIMEOUT);
+    const lib     = parsed.protocol === 'https:' ? https : http;
+    const timeout = setTimeout(() => reject(new Error('Request timeout')), REQ_TIMEOUT);
 
     const req = lib.get({
       hostname: parsed.hostname,
@@ -611,23 +638,23 @@ function fetchPlaylist(playlistUrl, redirectCount = 0) {
         'Accept-Language': 'en-US,en;q=0.9',
         'Connection'     : 'keep-alive',
         'Cache-Control'  : 'no-cache',
+        'Referer'        : parsed.origin || parsed.protocol + '//' + parsed.hostname,
       },
     }, (res) => {
       clearTimeout(timeout);
-      if (timedOut) return;
 
       // Follow redirects
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         try {
           const redir = new urlMod.URL(res.headers.location, playlistUrl).href;
-          debug(`[FETCH] Redirect (${res.statusCode}) → ${redir.slice(0, 70)}`);
+          debug(`[FETCH] Redirect ${res.statusCode} → ${redir.slice(0, 70)}`);
           fetchPlaylist(redir, redirectCount + 1).then(resolve).catch(reject);
         } catch (e) { reject(e); }
         return;
       }
 
       if (res.statusCode < 200 || res.statusCode >= 400) {
-        return reject(new Error(`HTTP ${res.statusCode} from ${playlistUrl.slice(0, 60)}`));
+        return reject(new Error('HTTP ' + res.statusCode));
       }
 
       let data = '';
@@ -658,7 +685,8 @@ function noCache(res) {
   res.setHeader('Expires',       '0');
 }
 
-function json(res, data, code = 200) {
+function sendJSON(res, data, code) {
+  code = code || 200;
   const body = JSON.stringify(data);
   res.writeHead(code, {
     'Content-Type'               : 'application/json; charset=utf-8',
@@ -671,7 +699,8 @@ function json(res, data, code = 200) {
 
 function serveStatic(res, filePath) {
   if (!fs.existsSync(filePath)) {
-    res.writeHead(404); return res.end('Not found');
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    return res.end('404 Not Found');
   }
   const ext  = path.extname(filePath).toLowerCase();
   const mime = {
@@ -718,149 +747,179 @@ const server = http.createServer(async (req, res) => {
   setCORS(res);
 
   // Preflight
-  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
 
   const parsed   = urlMod.parse(req.url, true);
-  const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+  const pathname = (parsed.pathname || '/').replace(/\/+$/, '') || '/';
   const query    = parsed.query;
 
   debug(`${req.method} ${pathname}`);
 
-  // ── /health ────────────────────────────────────────────────────────────────
+  // ── /health ──────────────────────────────────────────────────────────────
   if (pathname === '/health' || pathname === '/api/health') {
     noCache(res);
     const streams  = getEnabledStreams();
     const groups   = getGroups();
     const settings = getSettings();
-    return json(res, {
-      status     : 'ok',
-      addon      : settings.addonName || 'Jash IPTV',
-      streams    : streams.length,
-      groups     : groups.length,
-      cache      : streamCache.size,
-      uptime     : Math.round(process.uptime()),
-      publicUrl  : PUBLIC_URL,
-      manifestUrl: `${PUBLIC_URL}/manifest.json`,
+    const manifest = buildManifest();
+    return sendJSON(res, {
+      status      : 'ok',
+      addon       : settings.addonName || 'Jash IPTV',
+      streams     : streams.length,
+      groups      : groups.length,
+      cache       : streamCache.size,
+      uptime      : Math.round(process.uptime()),
+      publicUrl   : PUBLIC_URL,
+      manifestUrl : `${PUBLIC_URL}/manifest.json`,
+      version     : manifest.version,
     });
   }
 
-  // ── /api/sync (POST) ────────────────────────────────────────────────────────
-  // Frontend pushes config here. We just write the file — next request picks it up.
+  // ── /api/sync (POST) ──────────────────────────────────────────────────────
   if (pathname === '/api/sync' && req.method === 'POST') {
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', () => {
       try {
-        const cfg   = JSON.parse(body);
+        const cfg = JSON.parse(body);
+
+        // Validate basic structure
+        if (!Array.isArray(cfg.streams)) {
+          return sendJSON(res, { ok: false, error: 'Invalid payload: streams must be an array' }, 400);
+        }
+
+        // Write config to disk
         fs.writeFileSync(CFG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
 
-        // Clear resolution cache so next play re-extracts fresh HLS URLs
+        // Clear HLS cache so next play re-extracts fresh URLs
         streamCache.clear();
 
         const count    = (cfg.streams || []).filter(s => s.enabled !== false).length;
         const combined = (cfg.combinedChannels || []).length;
 
-        log(`[SYNC] ✅ ${count} streams, ${combined} combined channels`);
+        log(`[SYNC] ✅ ${count} streams, ${combined} combined channels saved`);
 
-        // Return the new manifest version so frontend can confirm
-        let version = '2.0';
-        try {
-          const stat = fs.statSync(CFG_FILE);
-          version    = `2.${Math.floor(stat.mtimeMs / 1000)}`;
-        } catch { /* ignore */ }
+        // Get new manifest version
+        const manifest = buildManifest();
+        return sendJSON(res, { ok: true, streams: count, combined, version: manifest.version });
 
-        return json(res, { ok: true, streams: count, combined, version });
       } catch (e) {
-        error('[SYNC]', e.message);
-        return json(res, { ok: false, error: e.message }, 400);
+        error('[SYNC] Error:', e.message);
+        return sendJSON(res, { ok: false, error: e.message }, 400);
       }
     });
     return;
   }
 
-  // ── /api/config (GET) ───────────────────────────────────────────────────────
+  // ── /api/config (GET) ─────────────────────────────────────────────────────
   if (pathname === '/api/config' && req.method === 'GET') {
     noCache(res);
-    return json(res, loadConfig());
+    return sendJSON(res, loadConfig());
   }
 
-  // ── /api/cache (DELETE) ─────────────────────────────────────────────────────
+  // ── /api/cache (DELETE) ───────────────────────────────────────────────────
   if (pathname === '/api/cache' && req.method === 'DELETE') {
     const n = streamCache.size;
     streamCache.clear();
     log(`[CACHE] Cleared ${n} entries`);
-    return json(res, { ok: true, cleared: n });
+    return sendJSON(res, { ok: true, cleared: n });
   }
 
-  // ── /manifest.json ──────────────────────────────────────────────────────────
+  // ── /manifest.json ────────────────────────────────────────────────────────
   if (pathname === '/manifest.json') {
     noCache(res);
     const manifest = buildManifest();
     log(`[MANIFEST] v${manifest.version} · ${manifest.catalogs.length} catalogs · ${getEnabledStreams().length} streams`);
-    return json(res, manifest);
+    return sendJSON(res, manifest);
   }
 
-  // ── /catalog/tv/:catId[/extra].json ─────────────────────────────────────────
+  // ── /logo.png — serve a simple SVG as PNG fallback ────────────────────────
+  if (pathname === '/logo.png' || pathname === '/favicon.ico') {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+      <rect width="100" height="100" rx="20" fill="#7C3AED"/>
+      <text x="50" y="65" font-size="50" text-anchor="middle" fill="white">📡</text>
+    </svg>`;
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' });
+    return res.end(svg);
+  }
+
+  // ── /catalog/tv/:catId[/extra].json ──────────────────────────────────────
+  // Matches: /catalog/tv/jash_cat_0.json
+  //          /catalog/tv/jash_cat_0/search=query.json
   const catM = pathname.match(/^\/catalog\/tv\/([^/]+?)(?:\/(.+))?\.json$/);
   if (catM) {
     noCache(res);
     const catId = decodeURIComponent(catM[1]);
-    let   extra = {};
+    const extra = {};
+
+    // Parse path-style extra params (e.g. search=query)
     if (catM[2]) {
       catM[2].split('&').forEach(p => {
         const [k, ...v] = p.split('=');
         if (k) extra[k] = decodeURIComponent(v.join('=') || '');
       });
     }
-    if (query.extra)  Object.assign(extra, parseExtra(query.extra));
-    if (query.search) extra.search = query.search;
+    // Also handle query string params
+    if (query.extra)  Object.assign(extra, parseExtra(String(query.extra)));
+    if (query.search) extra.search = String(query.search);
 
-    return json(res, handleCatalog(catId, extra));
+    debug(`[CATALOG] catId=${catId} search=${extra.search || ''}`);
+    return sendJSON(res, handleCatalog(catId, extra));
   }
 
-  // ── /meta/tv/:id.json ────────────────────────────────────────────────────────
-  const metaM = pathname.match(/^\/meta\/tv\/([^/]+)\.json$/);
+  // ── /meta/tv/:id.json ─────────────────────────────────────────────────────
+  const metaM = pathname.match(/^\/meta\/tv\/(.+)\.json$/);
   if (metaM) {
-    return json(res, handleMeta(metaM[1]));
+    noCache(res);
+    const rawId = metaM[1];
+    debug(`[META] id=${rawId.slice(0, 80)}`);
+    return sendJSON(res, handleMeta(rawId));
   }
 
-  // ── /stream/tv/:id.json ──────────────────────────────────────────────────────
-  const streamM = pathname.match(/^\/stream\/tv\/([^/]+)\.json$/);
+  // ── /stream/tv/:id.json ───────────────────────────────────────────────────
+  const streamM = pathname.match(/^\/stream\/tv\/(.+)\.json$/);
   if (streamM) {
     noCache(res);
-    log(`[STREAM] Request: ${streamM[1].slice(0, 80)}`);
+    const rawId = streamM[1];
+    log(`[STREAM] Request: ${rawId.slice(0, 80)}`);
     try {
-      return json(res, await handleStream(streamM[1]));
+      const result = await handleStream(rawId);
+      return sendJSON(res, result);
     } catch (e) {
       error('[STREAM] Unhandled error:', e.message);
-      return json(res, { streams: [] });
+      return sendJSON(res, { streams: [] });
     }
   }
 
-  // ── /configure → redirect to SPA ────────────────────────────────────────────
+  // ── /configure → redirect to SPA ─────────────────────────────────────────
   if (pathname === '/configure') {
     res.writeHead(302, { Location: '/' });
     return res.end();
   }
 
-  // ── Static files / SPA fallback ─────────────────────────────────────────────
+  // ── Static files (React build) / SPA fallback ─────────────────────────────
   if (fs.existsSync(DIST_DIR)) {
-    const safePath = path.join(DIST_DIR, pathname === '/' ? 'index.html' : pathname);
+    const requestedPath = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '');
+    const safePath      = path.resolve(DIST_DIR, requestedPath);
 
-    // Path traversal guard
-    if (!path.resolve(safePath).startsWith(path.resolve(DIST_DIR))) {
-      res.writeHead(403); return res.end('Forbidden');
+    // Path traversal protection
+    if (!safePath.startsWith(path.resolve(DIST_DIR))) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      return res.end('Forbidden');
     }
 
     if (fs.existsSync(safePath) && fs.statSync(safePath).isFile()) {
       return serveStatic(res, safePath);
     }
 
-    // SPA fallback — return index.html for all unknown paths
+    // SPA fallback for all non-file routes
     return serveStatic(res, path.join(DIST_DIR, 'index.html'));
   }
 
-  // No build yet — info page
+  // No build available — show info page
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`<!DOCTYPE html>
 <html>
@@ -868,57 +927,57 @@ const server = http.createServer(async (req, res) => {
   <title>Jash Addon</title>
   <style>
     body{background:#0f172a;color:#e2e8f0;font-family:monospace;padding:2rem;max-width:640px;margin:0 auto}
-    h1{color:#a78bfa}a{color:#818cf8}
-    code{background:#1e293b;padding:2px 8px;border-radius:4px;font-size:.9em}
-    .ok{color:#34d399}.warn{color:#fbbf24}
+    h1{color:#a78bfa} a{color:#818cf8} code{background:#1e293b;padding:2px 8px;border-radius:4px}
+    .ok{color:#34d399} .warn{color:#fbbf24} hr{border-color:#334155;margin:1.5rem 0}
     pre{background:#1e293b;padding:1rem;border-radius:8px;overflow-x:auto;font-size:.8em}
-    hr{border-color:#334155;margin:1.5rem 0}
   </style>
 </head>
 <body>
-  <h1>🚀 Jash Addon — Backend v6.0</h1>
-  <p class="warn">⚠️ Frontend not built yet.</p>
-  <p>Run: <code>npm run build</code> then restart the server.</p>
+  <h1>🚀 Jash Addon v7.0</h1>
+  <p class="warn">⚠️ React frontend not built yet.</p>
+  <p>Run: <code>npm run build</code> then restart.</p>
   <hr>
-  <p>📋 Manifest : <a href="/manifest.json">/manifest.json</a></p>
-  <p>❤️ Health   : <a href="/health">/health</a></p>
-  <p class="ok">✅ Backend API is running correctly.</p>
+  <p>📋 Manifest: <a href="/manifest.json">/manifest.json</a></p>
+  <p>❤️ Health: <a href="/health">/health</a></p>
+  <p class="ok">✅ Backend is running correctly.</p>
 </body>
 </html>`);
 });
 
-// ─── Process Guards ───────────────────────────────────────────────────────────
+// ─── Error Handlers ────────────────────────────────────────────────────────────
 process.on('uncaughtException',  e => error('Uncaught:', e.message));
 process.on('unhandledRejection', r => error('Unhandled:', r));
 server.on('error', e => {
   if (e.code === 'EADDRINUSE') {
-    error(`Port ${PORT} already in use — set PORT env var to a different port`);
+    error(`Port ${PORT} in use. Set PORT env var.`);
     process.exit(1);
   }
   error('Server error:', e.message);
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
+// ─── Start ─────────────────────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
   const streams  = getEnabledStreams();
   const groups   = getGroups();
   const settings = getSettings();
+  const manifest = buildManifest();
 
   log('═══════════════════════════════════════════════════════════════');
-  log(`🚀  ${settings.addonName} — Jash Addon Backend v6.0`);
-  log(`📡  Listening  : http://0.0.0.0:${PORT}`);
-  log(`🌐  Public URL : ${PUBLIC_URL}`);
-  log(`📋  Manifest   : ${PUBLIC_URL}/manifest.json`);
-  log(`⚙️   Config UI  : ${PUBLIC_URL}/`);
-  log(`❤️   Health    : ${PUBLIC_URL}/health`);
-  log(`📺  Stremio    : stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/manifest.json`);
+  log(`🚀  ${settings.addonName} — Jash Addon Backend v7.0`);
+  log(`📡  Listening   : http://0.0.0.0:${PORT}`);
+  log(`🌐  Public URL  : ${PUBLIC_URL}`);
+  log(`📋  Manifest    : ${PUBLIC_URL}/manifest.json`);
+  log(`🔖  Version     : ${manifest.version}`);
+  log(`⚙️   Config UI   : ${PUBLIC_URL}/`);
+  log(`❤️   Health     : ${PUBLIC_URL}/health`);
+  log(`📺  Stremio     : stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/manifest.json`);
   log('═══════════════════════════════════════════════════════════════');
 
   if (streams.length) {
-    log(`📺  Loaded: ${streams.length} streams | ${groups.length} groups from config file`);
-    log(`🔤  Sort: ${settings.sortAlphabetically ? 'Alphabetical (group → name)' : 'Manual order'}`);
-    log(`🎬  Multi-quality combine: ${settings.combineMultiQuality !== false ? 'ON' : 'OFF'}`);
+    log(`📺  ${streams.length} streams | ${groups.length} groups`);
+    log(`🔤  Sort: ${settings.sortAlphabetically ? 'A→Z (group+name)' : 'Manual order'}`);
+    log(`🎬  Multi-quality: ${settings.combineMultiQuality !== false ? 'ON' : 'OFF'}`);
   } else {
-    log(`ℹ️   No streams yet — open ${PUBLIC_URL} to add sources and sync`);
+    log(`ℹ️   No streams yet — open ${PUBLIC_URL} to configure`);
   }
 });
