@@ -5,13 +5,13 @@ import { parseM3U, fetchM3U } from '../utils/m3uParser';
 import { downloadM3UFile, generateM3U, generateM3UBlobUrl } from '../utils/m3uExporter';
 
 export function useAppStore() {
-  const [sources, setSources] = useState<Source[]>([]);
-  const [streams, setStreams] = useState<Stream[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [settings, setSettings] = useState<Settings>(getDefaultSettings());
-  const [activeTab, setActiveTab] = useState<Tab>('sources');
-  const [loading, setLoading] = useState(true);
-  const [notification, setNotification] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [sources,      setSources]      = useState<Source[]>([]);
+  const [streams,      setStreams]       = useState<Stream[]>([]);
+  const [groups,       setGroups]        = useState<Group[]>([]);
+  const [settings,     setSettings]      = useState<Settings>(getDefaultSettings());
+  const [activeTab,    setActiveTab]     = useState<Tab>('sources');
+  const [loading,      setLoading]       = useState(true);
+  const [notification, setNotification]  = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   const notify = useCallback((msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     setNotification({ msg, type });
@@ -28,7 +28,8 @@ export function useAppStore() {
         settingsDB.get(),
       ]);
       setSources(s.sort((a, b) => a.priority - b.priority));
-      setStreams(st);
+      // Preserve stored order (order field)
+      setStreams(st.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
       setGroups(g);
       setSettings(se);
     } catch (_e) {
@@ -49,11 +50,11 @@ export function useAppStore() {
       const name = s.group || 'Uncategorized';
       if (!groupMap.has(name)) {
         groupMap.set(name, {
-          id: `grp_${name.replace(/\s+/g, '_').toLowerCase()}_${Date.now()}`,
+          id        : `grp_${name.replace(/\s+/g, '_').toLowerCase()}_${Date.now()}`,
           name,
           streamCount: 0,
-          enabled: true,
-          sourceIds: [],
+          enabled   : true,
+          sourceIds : [],
         });
       }
       const g = groupMap.get(name)!;
@@ -62,10 +63,12 @@ export function useAppStore() {
     });
 
     await groupsDB.clear();
-    const groupsArr = Array.from(groupMap.values());
-    await Promise.all(groupsArr.map(g => groupsDB.put(g)));
-    setGroups(groupsArr);
+    const arr = Array.from(groupMap.values());
+    await Promise.all(arr.map(g => groupsDB.put(g)));
+    setGroups(arr);
   }, []);
+
+  // ─── Sources ──────────────────────────────────────────────────────────────
 
   const addSource = useCallback(async (source: Source, content?: string) => {
     source.status = 'loading';
@@ -81,24 +84,26 @@ export function useAppStore() {
         m3uContent = `#EXTM3U\n#EXTINF:-1 group-title="${source.name}",${source.name}\n${source.url}`;
       }
 
-      const parsed = parseM3U(m3uContent, source.id);
+      const existing  = await streamsDB.getAll();
+      const nextOrder = existing.length;
+      const parsed    = parseM3U(m3uContent, source.id).map((s, i) => ({ ...s, order: nextOrder + i }));
+
       source.streamCount = parsed.length;
-      source.status = 'active';
+      source.status      = 'active';
       source.lastUpdated = Date.now();
-      source.content = m3uContent;
+      source.content     = m3uContent;
 
       await sourcesDB.put(source);
       await streamsDB.bulkPut(parsed);
 
       const allStreams = await streamsDB.getAll();
-      setStreams(allStreams);
+      setStreams(allStreams.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
       await rebuildGroups(allStreams);
-
       setSources(prev => prev.map(s => s.id === source.id ? source : s));
-      notify(`Added source: ${source.name} (${parsed.length} streams)`, 'success');
+      notify(`Added: ${source.name} (${parsed.length} streams)`, 'success');
     } catch (e) {
       source.status = 'error';
-      source.error = (e as Error).message;
+      source.error  = (e as Error).message;
       await sourcesDB.put(source);
       setSources(prev => prev.map(s => s.id === source.id ? source : s));
       notify(`Error: ${(e as Error).message}`, 'error');
@@ -109,7 +114,6 @@ export function useAppStore() {
     const source = sources.find(s => s.id === sourceId);
     if (!source) return;
 
-    source.status = 'loading';
     setSources(prev => prev.map(s => s.id === sourceId ? { ...s, status: 'loading' } : s));
 
     try {
@@ -120,24 +124,29 @@ export function useAppStore() {
         m3uContent = source.content;
       }
 
+      // Get existing order base
+      const existing  = await streamsDB.getAll();
+      const srcStreams = existing.filter(s => s.sourceId === sourceId);
+      const baseOrder = srcStreams.length ? Math.min(...srcStreams.map(s => s.order ?? 0)) : existing.length;
+
       await streamsDB.deleteBySource(sourceId);
-      const parsed = parseM3U(m3uContent, sourceId);
+      const parsed = parseM3U(m3uContent, sourceId).map((s, i) => ({ ...s, order: baseOrder + i }));
       await streamsDB.bulkPut(parsed);
 
       source.streamCount = parsed.length;
-      source.status = 'active';
+      source.status      = 'active';
       source.lastUpdated = Date.now();
-      source.content = m3uContent;
+      source.content     = m3uContent;
       await sourcesDB.put(source);
 
       const allStreams = await streamsDB.getAll();
-      setStreams(allStreams);
+      setStreams(allStreams.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
       await rebuildGroups(allStreams);
       setSources(prev => prev.map(s => s.id === sourceId ? source : s));
       notify(`Refreshed: ${source.name} (${parsed.length} streams)`, 'success');
     } catch (e) {
       source.status = 'error';
-      source.error = (e as Error).message;
+      source.error  = (e as Error).message;
       await sourcesDB.put(source);
       setSources(prev => prev.map(s => s.id === sourceId ? source : s));
       notify(`Refresh failed: ${(e as Error).message}`, 'error');
@@ -148,7 +157,7 @@ export function useAppStore() {
     await streamsDB.deleteBySource(sourceId);
     await sourcesDB.delete(sourceId);
     const allStreams = await streamsDB.getAll();
-    setStreams(allStreams);
+    setStreams(allStreams.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
     setSources(prev => prev.filter(s => s.id !== sourceId));
     await rebuildGroups(allStreams);
     notify('Source deleted', 'success');
@@ -161,6 +170,8 @@ export function useAppStore() {
     await sourcesDB.put(updated);
     setSources(prev => prev.map(s => s.id === sourceId ? updated : s));
   }, [sources]);
+
+  // ─── Streams ──────────────────────────────────────────────────────────────
 
   const updateStream = useCallback(async (stream: Stream) => {
     await streamsDB.put(stream);
@@ -209,14 +220,22 @@ export function useAppStore() {
     setStreams(prev => prev.map(s => s.id === streamId ? updated : s));
   }, [streams]);
 
+  /**
+   * Reorder streams by providing a new ordered array of stream IDs.
+   * Persists the `order` field to IndexedDB and updates React state.
+   */
+  const reorderStreams = useCallback(async (orderedIds: string[]) => {
+    const idToOrder = new Map(orderedIds.map((id, i) => [id, i]));
+    const updated   = streams.map(s => ({ ...s, order: idToOrder.has(s.id) ? idToOrder.get(s.id)! : (s.order ?? 0) }));
+    await streamsDB.bulkPut(updated);
+    const sorted = [...updated].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    setStreams(sorted);
+  }, [streams]);
+
+  // ─── Groups ───────────────────────────────────────────────────────────────
+
   const createGroup = useCallback(async (name: string) => {
-    const group: Group = {
-      id: `grp_${Date.now()}`,
-      name,
-      streamCount: 0,
-      enabled: true,
-      sourceIds: [],
-    };
+    const group: Group = { id: `grp_${Date.now()}`, name, streamCount: 0, enabled: true, sourceIds: [] };
     await groupsDB.put(group);
     setGroups(prev => [...prev, group]);
     notify(`Group "${name}" created`, 'success');
@@ -225,27 +244,28 @@ export function useAppStore() {
   const deleteGroup = useCallback(async (groupId: string) => {
     const group = groups.find(g => g.id === groupId);
     if (!group) return;
-    const affected = streams.filter(s => s.group === group.name);
-    const updated = affected.map(s => ({ ...s, group: 'Uncategorized' }));
-    await streamsDB.bulkPut(updated);
+    const affected = streams.filter(s => s.group === group.name).map(s => ({ ...s, group: 'Uncategorized' }));
+    await streamsDB.bulkPut(affected);
     await groupsDB.delete(groupId);
     setStreams(prev => prev.map(s => s.group === group.name ? { ...s, group: 'Uncategorized' } : s));
     setGroups(prev => prev.filter(g => g.id !== groupId));
-    notify(`Group deleted, streams moved to Uncategorized`, 'success');
+    notify('Group deleted, streams moved to Uncategorized', 'success');
   }, [groups, streams, notify]);
 
   const renameGroup = useCallback(async (groupId: string, newName: string) => {
     const group = groups.find(g => g.id === groupId);
     if (!group) return;
-    const oldName = group.name;
+    const oldName     = group.name;
     const updatedGroup = { ...group, name: newName };
     await groupsDB.put(updatedGroup);
     const affected = streams.filter(s => s.group === oldName).map(s => ({ ...s, group: newName }));
     await streamsDB.bulkPut(affected);
-    setGroups(prev => prev.map(g => g.id === groupId ? updatedGroup : g));
+    setGroups(prev  => prev.map(g => g.id === groupId ? updatedGroup : g));
     setStreams(prev => prev.map(s => s.group === oldName ? { ...s, group: newName } : s));
     notify(`Group renamed to "${newName}"`, 'success');
   }, [groups, streams, notify]);
+
+  // ─── Settings ─────────────────────────────────────────────────────────────
 
   const saveSettings = useCallback(async (s: Settings) => {
     await settingsDB.put(s);
@@ -253,14 +273,14 @@ export function useAppStore() {
     notify('Settings saved', 'success');
   }, [notify]);
 
+  // ─── Config export / import ───────────────────────────────────────────────
+
   const exportConfigData = useCallback(async () => {
     const config = await exportConfig();
-    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'jash-addon-config.json';
-    a.click();
+    const blob   = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+    const url    = URL.createObjectURL(blob);
+    const a      = document.createElement('a');
+    a.href = url; a.download = 'jash-addon-config.json'; a.click();
     URL.revokeObjectURL(url);
     notify('Configuration exported', 'success');
   }, [notify]);
@@ -271,59 +291,57 @@ export function useAppStore() {
     notify('Configuration imported successfully', 'success');
   }, [loadAll, notify]);
 
-  // ─── M3U Export / Download ────────────────────────────────────────────────
+  // ─── M3U Export ───────────────────────────────────────────────────────────
 
-  /** Download the current playlist as a .m3u file */
   const downloadM3U = useCallback((options: {
     includeDisabled?: boolean;
     filterGroup?: string;
     filename?: string;
     playlistName?: string;
   } = {}) => {
-    const currentStreams = streams;
-    if (!currentStreams.length) {
-      notify('No streams to export', 'error');
-      return;
-    }
+    if (!streams.length) { notify('No streams to export', 'error'); return; }
     const filename = options.filename || `jash-playlist-${new Date().toISOString().slice(0, 10)}.m3u`;
-    downloadM3UFile(currentStreams, filename, {
+    // Export in current order (order field), not sorted by group
+    downloadM3UFile(streams, filename, {
       includeDisabled: options.includeDisabled,
-      filterGroup: options.filterGroup,
-      playlistName: options.playlistName || 'Jash IPTV',
+      filterGroup    : options.filterGroup,
+      playlistName   : options.playlistName || 'Jash IPTV',
+      sortByGroup    : false,   // preserve manual order
     });
-    const count = currentStreams.filter(s =>
+    const count = streams.filter(s =>
       (options.includeDisabled || s.enabled) &&
       (!options.filterGroup || s.group === options.filterGroup)
     ).length;
     notify(`Downloaded ${count.toLocaleString()} streams as M3U`, 'success');
   }, [streams, notify]);
 
-  /** Get the raw M3U playlist text content */
   const getM3UContent = useCallback((options: {
     includeDisabled?: boolean;
     filterGroup?: string;
     playlistName?: string;
+    sortByGroup?: boolean;
   } = {}): string => {
     return generateM3U(streams, {
       includeDisabled: options.includeDisabled,
-      filterGroup: options.filterGroup,
-      playlistName: options.playlistName || 'Jash IPTV',
+      filterGroup    : options.filterGroup,
+      playlistName   : options.playlistName || 'Jash IPTV',
+      sortByGroup    : options.sortByGroup ?? false,
     });
   }, [streams]);
 
-  /** Generate a temporary blob URL for the playlist (revoke after use) */
   const getM3UBlobUrl = useCallback((options: {
     includeDisabled?: boolean;
     filterGroup?: string;
   } = {}): string => {
-    return generateM3UBlobUrl(streams, options);
+    return generateM3UBlobUrl(streams, { ...options, sortByGroup: false });
   }, [streams]);
 
   return {
     sources, streams, groups, settings, activeTab, loading, notification,
     setActiveTab, notify,
     addSource, refreshSource, deleteSource, toggleSource,
-    updateStream, deleteStream, bulkDeleteStreams, bulkMoveStreams, bulkToggleStreams, updateStreamStatus,
+    updateStream, deleteStream, bulkDeleteStreams, bulkMoveStreams, bulkToggleStreams,
+    updateStreamStatus, reorderStreams,
     createGroup, deleteGroup, renameGroup,
     saveSettings,
     exportConfigData, importConfigData,

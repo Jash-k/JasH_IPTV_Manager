@@ -232,9 +232,21 @@ export const BackendPanel: React.FC<Props> = ({ store }) => {
         </h3>
 
         <p className="text-gray-400 text-sm">
-          Push your current stream configuration to the backend server. 
-          After syncing, Stremio will see your updated streams immediately — no reinstall needed.
+          Push your current stream configuration to the backend server.
+          After syncing, the manifest version is bumped automatically so Stremio detects changes
+          and refreshes catalogs — <strong className="text-violet-300">no reinstall needed</strong>.
         </p>
+
+        <div className="bg-violet-900/20 border border-violet-700/30 rounded-xl px-4 py-3 text-xs text-violet-200/80 space-y-1">
+          <div className="font-semibold text-violet-300 mb-1">🔄 How instant sync works:</div>
+          <div>1. Click Sync → backend writes new config &amp; bumps manifest version</div>
+          <div>2. Stremio sees the new version string on next catalog open → re-fetches</div>
+          <div>3. Your updated channels appear automatically ✅</div>
+          <div className="text-violet-300/60 mt-1">
+            If Stremio still shows old data: pull down to refresh in Stremio or restart it.
+            Stream cache is also cleared on sync so HLS re-extraction runs fresh.
+          </div>
+        </div>
 
         {/* Sync stats */}
         <div className="bg-gray-700/40 border border-gray-600/50 rounded-xl p-4 grid grid-cols-3 gap-3 text-center">

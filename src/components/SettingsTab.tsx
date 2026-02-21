@@ -83,6 +83,26 @@ export const SettingsTab: React.FC<Props> = ({ store }) => {
               <span className={`absolute top-1 w-5 h-5 bg-white rounded-full transition-transform shadow ${form.combineByGroups ? 'left-6' : 'left-1'}`} />
             </button>
           </div>
+
+          {/* ── Combine Multi-Quality ──────────────────────────────────── */}
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-white font-medium flex items-center gap-2">
+                Combine Multi-Quality Streams
+                <span className="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                  Recommended
+                </span>
+              </div>
+              <div className="text-gray-500 text-sm">
+                Channels with the same name+group show as one entry in Stremio with multiple quality options.
+                Disable to list every stream URL separately.
+              </div>
+            </div>
+            <button onClick={() => setForm({ ...form, combineMultiQuality: !form.combineMultiQuality })}
+              className={`w-12 h-7 rounded-full transition-colors relative flex-shrink-0 ml-4 ${form.combineMultiQuality ? 'bg-blue-600' : 'bg-gray-600'}`}>
+              <span className={`absolute top-1 w-5 h-5 bg-white rounded-full transition-transform shadow ${form.combineMultiQuality ? 'left-6' : 'left-1'}`} />
+            </button>
+          </div>
           <div className="flex items-center justify-between">
             <div>
               <div className="text-white font-medium">Auto-Remove Dead Streams</div>

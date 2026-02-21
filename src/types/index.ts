@@ -11,6 +11,8 @@ export interface Stream {
   status?: 'alive' | 'dead' | 'unknown' | 'checking';
   responseTime?: number;
   lastChecked?: number;
+  /** Manual sort order — set by drag-and-drop reorder */
+  order?: number;
 }
 
 export interface Source {
@@ -50,6 +52,8 @@ export interface Settings {
   corsProxy: string;
   autoRemoveDead: boolean;
   combineByGroups: boolean;
+  /** Combine channels with same name+group into one entry with multiple quality streams */
+  combineMultiQuality: boolean;
   healthCheckInterval: number;
   lastSync?: number;
 }

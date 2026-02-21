@@ -160,12 +160,13 @@ export const settingsDB = {
 
 export function getDefaultSettings(): Settings {
   return {
-    addonId: 'jash-iptv-addon',
-    addonName: 'Jash IPTV',
-    corsProxy: 'https://corsproxy.io/?',
-    autoRemoveDead: false,
-    combineByGroups: true,
-    healthCheckInterval: 60,
+    addonId             : 'jash-iptv-addon',
+    addonName           : 'Jash IPTV',
+    corsProxy           : 'https://corsproxy.io/?',
+    autoRemoveDead      : false,
+    combineByGroups     : true,
+    combineMultiQuality : true,
+    healthCheckInterval : 60,
   };
 }
 
