@@ -35,7 +35,7 @@ RUN npm install --omit=dev
 # Copy the built React app from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Copy the backend server
+# Copy the backend server (backend/package.json sets "type":"commonjs" to fix ES module conflict)
 COPY backend/ ./backend/
 
 # Copy any other needed files

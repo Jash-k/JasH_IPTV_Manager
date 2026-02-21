@@ -17,7 +17,7 @@ React app (static files from `/dist`) AND all Stremio addon endpoints.
 
 ---
 
-## ⚠️ MOST COMMON ERROR — "vite: not found"
+## ⚠️ ERROR 1 — "vite: not found"
 
 ```
 sh: 1: vite: not found
@@ -33,7 +33,7 @@ This causes `npm install` to skip `devDependencies` — which includes `vite`,
 **Fix — use `npm install --include=dev`:**
 
 | Platform | Build Command |
-|----------|--------------|
+|----------|--------------| 
 | **Render** | `npm install --include=dev && npm run build` |
 | **Koyeb** | `npm install --include=dev && npm run build` |
 | **Railway** | `npm install --include=dev && npm run build` |
@@ -42,6 +42,41 @@ This causes `npm install` to skip `devDependencies` — which includes `vite`,
 
 > ✅ The `.npmrc` file in this repo sets `include=dev` automatically, but
 > always set the explicit build command on your platform as a safety net.
+
+---
+
+## ⚠️ ERROR 2 — "require is not defined in ES module scope"
+
+```
+ReferenceError: require is not defined in ES module scope
+This file is being treated as an ES module because '/opt/.../package.json' 
+contains "type": "module".
+```
+
+**Why it happens:**
+The root `package.json` has `"type": "module"` (required for Vite/React).
+This forces Node.js to treat ALL `.js` files — including `backend/server.js` — 
+as ES modules. But `backend/server.js` uses CommonJS `require()` syntax.
+
+**Fix — already applied ✅:**
+A `backend/package.json` file with `{"type": "commonjs"}` is included in this repo.
+This overrides the root `type` for the `backend/` directory only, making Node.js 
+treat `backend/server.js` as CommonJS (which it is).
+
+```
+backend/
+├── package.json     ← { "type": "commonjs" }  ← THIS fixes the error
+└── server.js        ← uses require() — now works correctly
+```
+
+**If you still see this error:**
+Make sure `backend/package.json` was not accidentally deleted. Its content must be:
+```json
+{ "type": "commonjs" }
+```
+
+No other fix is needed. Do NOT change `backend/server.js` to use `import/export` 
+syntax — it is intentionally CommonJS for maximum Node.js compatibility.
 
 ---
 
@@ -411,6 +446,17 @@ VPS     → PORT=7000,  PUBLIC_URL=https://your-domain.com
    The .npmrc file in this repo also sets include=dev globally.
    If your platform ignores .npmrc, use the explicit build command above.
 ```
+
+### "require is not defined in ES module scope"
+
+```
+ReferenceError: require is not defined in ES module scope
+This file is being treated as an ES module because 'package.json' contains "type": "module".
+```
+
+✅ Fix: Make sure backend/package.json exists with content: {"type": "commonjs"}
+   This file is already included in the repo. If deleted, recreate it.
+   Do NOT change the root package.json "type" field.
 
 ### "Cannot find module 'express'"
 
