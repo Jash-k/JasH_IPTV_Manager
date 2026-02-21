@@ -2,11 +2,6 @@
  * JASH ADDON — Backend Sync Utility
  * Pushes the current stream configuration from the React frontend
  * to the backend server so Stremio can access it via the addon endpoints.
- *
- * When deployed on Render/Koyeb/Railway/Vercel:
- *   - The React app and Node backend run on the same origin
- *   - Syncing writes to backend/streams-config.json
- *   - The stream handler reads that file and serves streams to Stremio
  */
 
 export interface SyncResult {
@@ -27,24 +22,20 @@ export interface BackendHealth {
   manifestUrl: string;
 }
 
-// Detect the backend base URL — same origin in production, localhost:7000 in dev
-function getBackendBase(): string {
+/** Detect the backend base URL — same origin in production, localhost:7000 in dev */
+export function getBackendBase(): string {
   if (typeof window === 'undefined') return 'http://localhost:7000';
-
   const { protocol, hostname, port } = window.location;
-
-  // Production: same origin as the React app
+  // Production: same origin as the React app (Render/Koyeb/Railway)
   if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
-    return `${protocol}//${hostname}${port ? `:${port}` : ''}`;
+    return `${protocol}//${hostname}${port && port !== '80' && port !== '443' ? `:${port}` : ''}`;
   }
-
   // Development: backend runs on 7000, Vite on 5173
   return 'http://localhost:7000';
 }
 
 /**
  * Sync the full configuration to the backend.
- * Call this after any significant change (add source, bulk delete, etc.)
  */
 export async function syncConfigToBackend(config: {
   streams: unknown[];
@@ -52,7 +43,7 @@ export async function syncConfigToBackend(config: {
   settings: unknown;
   sources?: unknown[];
 }): Promise<SyncResult> {
-  const base = getBackendBase();
+  const base    = getBackendBase();
   const syncUrl = `${base}/api/sync`;
 
   try {
@@ -60,7 +51,7 @@ export async function syncConfigToBackend(config: {
       method : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body   : JSON.stringify(config),
-      signal : AbortSignal.timeout(8000),
+      signal : AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {
@@ -73,8 +64,12 @@ export async function syncConfigToBackend(config: {
 
   } catch (e) {
     const msg = (e as Error).message;
-    // Backend not running — this is fine in pure frontend mode
-    if (msg.includes('Failed to fetch') || msg.includes('ECONNREFUSED') || msg.includes('NetworkError')) {
+    if (
+      msg.includes('Failed to fetch') ||
+      msg.includes('ECONNREFUSED')    ||
+      msg.includes('NetworkError')    ||
+      msg.includes('Load failed')
+    ) {
       return {
         ok       : false,
         error    : 'Backend not reachable. Running in offline/frontend-only mode.',
@@ -102,19 +97,32 @@ export async function checkBackendHealth(): Promise<BackendHealth | null> {
 }
 
 /**
- * Get the manifest URL based on the current backend.
+ * Get the manifest URL — always the real backend URL.
+ * In production this is the same origin as the React app.
+ * In dev this points to localhost:7000.
  */
 export function getManifestUrl(): string {
-  const base = getBackendBase();
-  return `${base}/manifest.json`;
+  return `${getBackendBase()}/manifest.json`;
 }
 
 /**
  * Get the Stremio deep-link install URL.
+ * Stremio protocol: stremio://host/manifest.json
+ * Works on Windows/Mac/Android Stremio app.
+ * For Samsung TV — user must manually enter the manifest URL.
  */
 export function getStremioInstallUrl(): string {
-  const manifest = getManifestUrl();
-  return manifest.replace(/^https?:\/\//, 'stremio://');
+  const base     = getBackendBase();
+  // Strip protocol → stremio://host:port/manifest.json
+  const noProto  = base.replace(/^https?:\/\//, '');
+  return `stremio://${noProto}/manifest.json`;
+}
+
+/**
+ * Get a human-readable HTTP manifest URL for copying into Stremio.
+ */
+export function getHttpManifestUrl(): string {
+  return getManifestUrl();
 }
 
 /**
