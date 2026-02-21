@@ -12,6 +12,7 @@ import { InstallTab } from './components/InstallTab';
 import { ExportPanel } from './components/ExportPanel';
 import { StreamHandlerTab } from './components/StreamHandlerTab';
 import { BackendPanel } from './components/BackendPanel';
+import { CombineStreamsTab } from './components/CombineStreamsTab';
 import { checkBackendHealth } from './utils/backendSync';
 
 export function App() {
@@ -73,16 +74,17 @@ export function App() {
 
       <main className="max-w-screen-2xl mx-auto px-4 py-6">
         <div className="animate-fade-in">
-          {activeTab === 'sources'    && <SourcesTab    store={store} />}
-          {activeTab === 'streams'    && <StreamsTab    store={store} />}
-          {activeTab === 'groups'     && <GroupsTab     store={store} />}
-          {activeTab === 'health'     && <HealthTab     store={store} />}
-          {activeTab === 'statistics' && <StatisticsTab store={store} />}
+          {activeTab === 'sources'    && <SourcesTab       store={store} />}
+          {activeTab === 'streams'    && <StreamsTab       store={store} />}
+          {activeTab === 'groups'     && <GroupsTab        store={store} />}
+          {activeTab === 'health'     && <HealthTab        store={store} />}
+          {activeTab === 'statistics' && <StatisticsTab    store={store} />}
+          {activeTab === 'combine'    && <CombineStreamsTab store={store} />}
           {activeTab === 'handler'    && <StreamHandlerTab store={store} />}
-          {activeTab === 'export'     && <ExportPanel   store={store} />}
-          {activeTab === 'backend'    && <BackendPanel  store={store} />}
-          {activeTab === 'settings'   && <SettingsTab   store={store} />}
-          {activeTab === 'install'    && <InstallTab    store={store} />}
+          {activeTab === 'export'     && <ExportPanel      store={store} />}
+          {activeTab === 'backend'    && <BackendPanel     store={store} />}
+          {activeTab === 'settings'   && <SettingsTab      store={store} />}
+          {activeTab === 'install'    && <InstallTab       store={store} />}
         </div>
       </main>
 

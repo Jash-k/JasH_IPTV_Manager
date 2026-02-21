@@ -1,17 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
-import { AppConfig, Source, Stream, Group, Settings, Tab } from '../types';
+import { AppConfig, Source, Stream, Group, Settings, Tab, CombinedChannel } from '../types';
 import { sourcesDB, streamsDB, groupsDB, settingsDB, getDefaultSettings, exportConfig, importConfig } from '../utils/db';
 import { parseM3U, fetchM3U } from '../utils/m3uParser';
 import { downloadM3UFile, generateM3U, generateM3UBlobUrl } from '../utils/m3uExporter';
 
 export function useAppStore() {
-  const [sources,      setSources]      = useState<Source[]>([]);
-  const [streams,      setStreams]       = useState<Stream[]>([]);
-  const [groups,       setGroups]        = useState<Group[]>([]);
-  const [settings,     setSettings]      = useState<Settings>(getDefaultSettings());
-  const [activeTab,    setActiveTab]     = useState<Tab>('sources');
-  const [loading,      setLoading]       = useState(true);
-  const [notification, setNotification]  = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [sources,          setSources]          = useState<Source[]>([]);
+  const [streams,          setStreams]           = useState<Stream[]>([]);
+  const [groups,           setGroups]            = useState<Group[]>([]);
+  const [settings,         setSettings]          = useState<Settings>(getDefaultSettings());
+  const [combinedChannels, setCombinedChannels]  = useState<CombinedChannel[]>([]);
+  const [activeTab,        setActiveTab]         = useState<Tab>('sources');
+  const [loading,          setLoading]           = useState(true);
+  const [notification,     setNotification]      = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   const notify = useCallback((msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     setNotification({ msg, type });
@@ -336,8 +337,50 @@ export function useAppStore() {
     return generateM3UBlobUrl(streams, { ...options, sortByGroup: false });
   }, [streams]);
 
+  // ─── Combined Channels ────────────────────────────────────────────────────
+
+  const loadCombinedChannels = useCallback(() => {
+    try {
+      const raw = localStorage.getItem('jash_combined_channels');
+      if (raw) setCombinedChannels(JSON.parse(raw));
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { loadCombinedChannels(); }, [loadCombinedChannels]);
+
+  const saveCombinedChannels = useCallback((list: CombinedChannel[]) => {
+    localStorage.setItem('jash_combined_channels', JSON.stringify(list));
+    setCombinedChannels(list);
+  }, []);
+
+  const addCombinedChannel = useCallback((ch: CombinedChannel) => {
+    setCombinedChannels(prev => {
+      const next = [...prev.filter(c => c.id !== ch.id), ch];
+      localStorage.setItem('jash_combined_channels', JSON.stringify(next));
+      return next;
+    });
+    notify(`Combined channel "${ch.name}" saved`, 'success');
+  }, [notify]);
+
+  const deleteCombinedChannel = useCallback((id: string) => {
+    setCombinedChannels(prev => {
+      const next = prev.filter(c => c.id !== id);
+      localStorage.setItem('jash_combined_channels', JSON.stringify(next));
+      return next;
+    });
+    notify('Combined channel deleted', 'success');
+  }, [notify]);
+
+  const toggleCombinedChannel = useCallback((id: string) => {
+    setCombinedChannels(prev => {
+      const next = prev.map(c => c.id === id ? { ...c, enabled: !c.enabled } : c);
+      localStorage.setItem('jash_combined_channels', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   return {
-    sources, streams, groups, settings, activeTab, loading, notification,
+    sources, streams, groups, settings, combinedChannels, activeTab, loading, notification,
     setActiveTab, notify,
     addSource, refreshSource, deleteSource, toggleSource,
     updateStream, deleteStream, bulkDeleteStreams, bulkMoveStreams, bulkToggleStreams,
@@ -346,6 +389,7 @@ export function useAppStore() {
     saveSettings,
     exportConfigData, importConfigData,
     downloadM3U, getM3UContent, getM3UBlobUrl,
+    saveCombinedChannels, addCombinedChannel, deleteCombinedChannel, toggleCombinedChannel,
     loadAll,
   };
 }

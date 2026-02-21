@@ -15,6 +15,7 @@ const tabs: { id: Tab; label: string; icon: string; highlight?: string; badge?: 
   { id: 'groups',     label: 'Groups',    icon: '📂' },
   { id: 'health',     label: 'Health',    icon: '❤️' },
   { id: 'statistics', label: 'Stats',     icon: '📊' },
+  { id: 'combine',    label: 'Combine',   icon: '🔗', highlight: 'indigo', badge: 'NEW' },
   { id: 'handler',    label: 'Handler',   icon: '🧩', highlight: 'blue',   badge: 'HLS' },
   { id: 'export',     label: 'Export',    icon: '⬇️', highlight: 'green',  badge: '↓' },
   { id: 'backend',    label: 'Backend',   icon: '🖥️', highlight: 'violet', badge: 'LIVE' },
@@ -76,6 +77,7 @@ export const Header: React.FC<Props> = ({
             const isBlue   = tab.highlight === 'blue';
             const isGreen  = tab.highlight === 'green';
             const isViolet = tab.highlight === 'violet';
+            const isIndigo = tab.highlight === 'indigo';
 
             return (
               <button
@@ -90,14 +92,18 @@ export const Header: React.FC<Props> = ({
                         ? 'bg-emerald-900/60 text-emerald-300 border-emerald-500'
                         : isViolet
                           ? 'bg-violet-900/60 text-violet-300 border-violet-500'
-                          : 'bg-gray-800 text-white border-purple-500'
+                          : isIndigo
+                            ? 'bg-indigo-900/60 text-indigo-300 border-indigo-500'
+                            : 'bg-gray-800 text-white border-purple-500'
                     : isBlue
                       ? 'text-blue-400 border-transparent hover:text-blue-300 hover:bg-blue-900/30'
                       : isGreen
                         ? 'text-emerald-400 border-transparent hover:text-emerald-300 hover:bg-emerald-900/30'
                         : isViolet
                           ? 'text-violet-400 border-transparent hover:text-violet-300 hover:bg-violet-900/30'
-                          : 'text-gray-400 border-transparent hover:text-gray-200 hover:bg-gray-800/50'
+                          : isIndigo
+                            ? 'text-indigo-400 border-transparent hover:text-indigo-300 hover:bg-indigo-900/30'
+                            : 'text-gray-400 border-transparent hover:text-gray-200 hover:bg-gray-800/50'
                 )}
               >
                 <span>{tab.icon}</span>
@@ -106,13 +112,11 @@ export const Header: React.FC<Props> = ({
                 {tab.badge && tab.highlight && !isActive && (
                   <span className={cn(
                     'hidden sm:inline text-xs px-1.5 py-0.5 rounded-full leading-none border',
-                    isBlue
-                      ? 'bg-blue-500/20 text-blue-400 border-blue-500/40'
-                      : isGreen
-                        ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-                        : 'bg-violet-500/20 text-violet-400 border-violet-500/40'
+                    isBlue   ? 'bg-blue-500/20 text-blue-400 border-blue-500/40'
+                    : isGreen  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+                    : isIndigo ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/40'
+                               : 'bg-violet-500/20 text-violet-400 border-violet-500/40'
                   )}>
-                    {/* Show live dot for backend tab when online */}
                     {isViolet && backendOnline ? (
                       <span className="flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-violet-400 inline-block" />

@@ -166,6 +166,7 @@ export function getDefaultSettings(): Settings {
     autoRemoveDead      : false,
     combineByGroups     : true,
     combineMultiQuality : true,
+    sortAlphabetically  : true,
     healthCheckInterval : 60,
   };
 }

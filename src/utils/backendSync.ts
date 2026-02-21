@@ -71,6 +71,7 @@ export async function syncConfigToBackend(config: {
   groups: unknown[];
   settings: unknown;
   sources?: unknown[];
+  combinedChannels?: unknown[];
 }): Promise<SyncResult> {
   const base    = getBackendBase();
   const syncUrl = `${base}/api/sync`;

@@ -54,11 +54,24 @@ export interface Settings {
   combineByGroups: boolean;
   /** Combine channels with same name+group into one entry with multiple quality streams */
   combineMultiQuality: boolean;
+  /** Sort streams alphabetically by group then name in Stremio */
+  sortAlphabetically: boolean;
   healthCheckInterval: number;
   lastSync?: number;
 }
 
-export type Tab = 'sources' | 'streams' | 'groups' | 'health' | 'statistics' | 'handler' | 'export' | 'backend' | 'settings' | 'install';
+/** A custom combined channel — multiple stream URLs shown as one catalog entry */
+export interface CombinedChannel {
+  id: string;
+  name: string;
+  group: string;
+  logo?: string;
+  streamUrls: string[];
+  enabled: boolean;
+  createdAt: number;
+}
+
+export type Tab = 'sources' | 'streams' | 'groups' | 'health' | 'statistics' | 'combine' | 'handler' | 'export' | 'backend' | 'settings' | 'install';
 
 export interface ParsedM3U {
   streams: Omit<Stream, 'id' | 'sourceId' | 'enabled' | 'status'>[];

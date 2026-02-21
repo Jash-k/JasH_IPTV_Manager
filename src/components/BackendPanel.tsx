@@ -20,7 +20,7 @@ import {
 interface Props { store: AppStore; }
 
 export const BackendPanel: React.FC<Props> = ({ store }) => {
-  const { streams, groups, sources, settings, notify } = store;
+  const { streams, groups, sources, settings, combinedChannels, notify } = store;
 
   const [health,        setHealth]        = useState<BackendHealth | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
@@ -60,10 +60,11 @@ export const BackendPanel: React.FC<Props> = ({ store }) => {
     setSyncing(true);
     try {
       const result = await syncConfigToBackend({
-        streams : enabledStreams,
+        streams          : enabledStreams,
         groups,
         sources,
         settings,
+        combinedChannels : combinedChannels.filter(c => c.enabled !== false),
       });
       setLastSync(result);
       if (result.ok) {
