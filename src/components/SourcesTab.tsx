@@ -12,7 +12,7 @@ type AddMode = 'url' | 'file' | 'cloud' | 'single' | 'manual' | null;
 const genId = () => `src_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
 export const SourcesTab: React.FC<Props> = ({ store }) => {
-  const { sources, addSource, refreshSource, deleteSource, toggleSource, notify } = store;
+  const { sources, streams, selectionModels, addSource, refreshSource, deleteSource, toggleSource, applyModelToSource, combineSourceChannels, setActiveTab, notify } = store;
   const [addMode, setAddMode] = useState<AddMode>(null);
   const [urlInput, setUrlInput] = useState('');
   const [nameInput, setNameInput] = useState('');
@@ -22,6 +22,10 @@ export const SourcesTab: React.FC<Props> = ({ store }) => {
   const [manualGroup, setManualGroup] = useState('');
   const [loading, setLoading] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [applyingModel, setApplyingModel] = useState<string | null>(null);
+  const [combining, setCombining] = useState<string | null>(null);
+  const [combineGroupName, setCombineGroupName] = useState('⭐ Best Streams');
+  const [showCombineBar, setShowCombineBar] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleAddUrl = async () => {
@@ -219,6 +223,74 @@ export const SourcesTab: React.FC<Props> = ({ store }) => {
         </div>
       )}
 
+      {/* ── Combine Controls ─────────────────────────────────────────────── */}
+      {sources.length >= 2 && (
+        <div className="bg-gradient-to-r from-yellow-900/30 to-amber-900/30 border border-yellow-700/40 rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">⭐</span>
+              <div>
+                <div className="text-white font-semibold text-sm">Auto-Combine Channels</div>
+                <div className="text-yellow-300/70 text-xs">
+                  Find channels that appear in multiple sources and combine them into one catalog entry
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setShowCombineBar(v => !v)}
+              className={cn(
+                'px-4 py-2 rounded-xl text-sm font-semibold transition-all flex-shrink-0',
+                showCombineBar
+                  ? 'bg-yellow-600 text-white'
+                  : 'bg-yellow-700/60 hover:bg-yellow-700 text-yellow-200 border border-yellow-600/50'
+              )}
+            >
+              {showCombineBar ? '▲ Hide' : '⭐ Combine Options'}
+            </button>
+          </div>
+
+          {showCombineBar && (
+            <div className="space-y-3 border-t border-yellow-700/30 pt-3">
+              <div className="flex gap-3 items-end flex-wrap">
+                <div className="flex-1 min-w-[200px]">
+                  <label className="text-yellow-300/70 text-xs mb-1 block">Combined Group Name</label>
+                  <input
+                    value={combineGroupName}
+                    onChange={e => setCombineGroupName(e.target.value)}
+                    placeholder="⭐ Best Streams"
+                    className="w-full bg-gray-800 border border-yellow-700/40 text-white rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500"
+                  />
+                </div>
+                <button
+                  onClick={async () => {
+                    setCombining('all');
+                    await combineSourceChannels(null, combineGroupName || '⭐ Best Streams');
+                    setCombining(null);
+                  }}
+                  disabled={combining === 'all'}
+                  className={cn(
+                    'flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all shadow-lg flex-shrink-0',
+                    combining === 'all'
+                      ? 'bg-yellow-800 text-yellow-300 cursor-wait animate-pulse'
+                      : 'bg-gradient-to-r from-yellow-600 to-amber-600 hover:from-yellow-500 hover:to-amber-500 text-white active:scale-95'
+                  )}
+                >
+                  <span className={combining === 'all' ? 'animate-spin inline-block' : ''}>⭐</span>
+                  {combining === 'all' ? 'Combining…' : 'Combine All Sources'}
+                </button>
+              </div>
+
+              <div className="bg-yellow-900/20 border border-yellow-700/20 rounded-lg px-4 py-2.5 text-xs text-yellow-200/70 space-y-1">
+                <div>• Channels with the same name (e.g. "Sun TV") found in ≥ 2 sources are combined into one entry</div>
+                <div>• Quality variants (Sun TV HD, Sun TV 4K) from the same source are handled by the backend automatically</div>
+                <div>• Combined channels appear in the <strong className="text-yellow-300">Combine</strong> tab — sync to backend to activate in Stremio</div>
+                <div>• <strong className="text-yellow-300">Language words are preserved</strong> — Zee Tamil ≠ Zee Marathi (safe to combine Tamil M3U sources)</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Sources List */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -262,9 +334,71 @@ export const SourcesTab: React.FC<Props> = ({ store }) => {
                 {src.url && <div className="text-gray-500 text-xs truncate">{src.url}</div>}
                 {src.error && <div className="text-red-400 text-xs mt-1">{src.error}</div>}
                 {src.lastUpdated && <div className="text-gray-600 text-xs mt-1">Updated: {new Date(src.lastUpdated).toLocaleString()}</div>}
+                {/* Selection Model badge + quick-change */}
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  {src.selectionModelId ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1">
+                      🎯 {selectionModels.find(m => m.id === src.selectionModelId)?.name || 'Model'}
+                      {src.rawStreamCount && (
+                        <span className="text-rose-400/60">({src.streamCount}/{src.rawStreamCount})</span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-600">No filter model</span>
+                  )}
+                  <select
+                    value={src.selectionModelId || ''}
+                    onChange={async e => {
+                      const modelId = e.target.value || null;
+                      setApplyingModel(src.id);
+                      await applyModelToSource(src.id, modelId);
+                      setApplyingModel(null);
+                    }}
+                    disabled={applyingModel === src.id}
+                    className="text-xs bg-gray-700 text-gray-300 rounded-lg px-2 py-1 border border-gray-600 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                    title="Apply selection model to this source"
+                  >
+                    <option value="">— Apply Model —</option>
+                    {selectionModels.map(m => (
+                      <option key={m.id} value={m.id}>
+                        {m.isBuiltIn ? '📦 ' : '✏️ '}{m.name}
+                      </option>
+                    ))}
+                  </select>
+                  {applyingModel === src.id && (
+                    <span className="text-xs text-rose-300 animate-pulse">Applying…</span>
+                  )}
+                  <button
+                    onClick={() => setActiveTab('models')}
+                    className="text-xs text-gray-600 hover:text-rose-400 transition-colors"
+                    title="Manage selection models"
+                  >
+                    🎯 Manage Models
+                  </button>
+                </div>
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Per-source Combine button — only show when there are ≥2 sources */}
+                {sources.length >= 2 && src.streamCount > 0 && (
+                  <button
+                    onClick={async () => {
+                      setCombining(src.id);
+                      await combineSourceChannels(src.id, combineGroupName || '⭐ Best Streams');
+                      setCombining(null);
+                    }}
+                    disabled={combining === src.id}
+                    className={cn(
+                      'px-2.5 py-2 rounded-lg text-xs font-semibold transition-all border',
+                      combining === src.id
+                        ? 'bg-yellow-800 border-yellow-700 text-yellow-300 cursor-wait animate-pulse'
+                        : 'bg-yellow-700/30 hover:bg-yellow-700/60 border-yellow-600/40 text-yellow-300 hover:text-yellow-100'
+                    )}
+                    title={`Find channels from "${src.name}" that exist in other sources and combine them`}
+                  >
+                    {combining === src.id ? '⏳' : '⭐'} Combine
+                  </button>
+                )}
                 {/* Toggle */}
                 <button onClick={() => toggleSource(src.id)}
                   className={cn('w-10 h-6 rounded-full transition-colors relative', src.enabled ? 'bg-purple-600' : 'bg-gray-600')}

@@ -1,8 +1,32 @@
 import { useState, useEffect, useCallback } from 'react';
-import { AppConfig, Source, Stream, Group, Settings, Tab, CombinedChannel } from '../types';
+import { AppConfig, Source, Stream, Group, Settings, Tab, CombinedChannel, SelectionModel } from '../types';
 import { sourcesDB, streamsDB, groupsDB, settingsDB, getDefaultSettings, exportConfig, importConfig } from '../utils/db';
 import { parseM3U, fetchM3U } from '../utils/m3uParser';
 import { downloadM3UFile, generateM3U, generateM3UBlobUrl } from '../utils/m3uExporter';
+import { filterStreamsByModel, BUILT_IN_MODELS, groupStreamsByChannel } from '../utils/channelMatcher';
+
+const MODELS_KEY = 'jash_selection_models';
+
+function loadModelsFromStorage(): SelectionModel[] {
+  try {
+    const raw = localStorage.getItem(MODELS_KEY);
+    const custom: SelectionModel[] = raw ? JSON.parse(raw) : [];
+    const builtIns: SelectionModel[] = BUILT_IN_MODELS.map(m => ({
+      ...m,
+      channels : [...m.channels] as string[],
+      createdAt: 0,
+      updatedAt: 0,
+    }));
+    return [...builtIns, ...custom.filter(m => !m.isBuiltIn)];
+  } catch {
+    return BUILT_IN_MODELS.map(m => ({ ...m, channels: [...m.channels] as string[], createdAt: 0, updatedAt: 0 }));
+  }
+}
+
+function saveModelsToStorage(models: SelectionModel[]): void {
+  const custom = models.filter(m => !m.isBuiltIn);
+  localStorage.setItem(MODELS_KEY, JSON.stringify(custom));
+}
 
 export function useAppStore() {
   const [sources,          setSources]          = useState<Source[]>([]);
@@ -10,6 +34,7 @@ export function useAppStore() {
   const [groups,           setGroups]            = useState<Group[]>([]);
   const [settings,         setSettings]          = useState<Settings>(getDefaultSettings());
   const [combinedChannels, setCombinedChannels]  = useState<CombinedChannel[]>([]);
+  const [selectionModels,  setSelectionModels]   = useState<SelectionModel[]>(() => loadModelsFromStorage());
   const [activeTab,        setActiveTab]         = useState<Tab>('sources');
   const [loading,          setLoading]           = useState(true);
   const [notification,     setNotification]      = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -379,8 +404,209 @@ export function useAppStore() {
     });
   }, []);
 
+  // ─── Selection Models ─────────────────────────────────────────────────────
+
+  const saveSelectionModel = useCallback((model: SelectionModel) => {
+    setSelectionModels(prev => {
+      const next = [...prev.filter(m => m.id !== model.id), model];
+      saveModelsToStorage(next);
+      return next;
+    });
+    notify(`Model "${model.name}" saved`, 'success');
+  }, [notify]);
+
+  const deleteSelectionModel = useCallback((id: string) => {
+    setSelectionModels(prev => {
+      const next = prev.filter(m => m.id !== id);
+      saveModelsToStorage(next);
+      return next;
+    });
+    notify('Model deleted', 'success');
+  }, [notify]);
+
+  /**
+   * Apply a selection model to a source:
+   * 1. Parse the raw M3U content (or refetch URL sources)
+   * 2. Filter streams through the model
+   * 3. Assign matched streams to a single group (model.defaultGroupName or source.selectionGroupName)
+   * 4. Delete old streams from this source and replace with filtered set
+   */
+  const applyModelToSource = useCallback(async (sourceId: string, modelId: string | null) => {
+    const source = sources.find(s => s.id === sourceId);
+    if (!source) return;
+
+    // Update the source's model assignment
+    const updatedSource: Source = { ...source, selectionModelId: modelId || undefined };
+    await sourcesDB.put(updatedSource);
+    setSources(prev => prev.map(s => s.id === sourceId ? updatedSource : s));
+
+    // Re-parse the source with the new model applied
+    try {
+      let m3uContent = source.content || '';
+      if (!m3uContent && source.type === 'url' && source.url) {
+        setSources(prev => prev.map(s => s.id === sourceId ? { ...s, status: 'loading' } : s));
+        m3uContent = await fetchM3U(source.url, settings.corsProxy);
+      }
+
+      if (!m3uContent) {
+        notify('No content to re-parse. Please refresh the source.', 'error');
+        return;
+      }
+
+      // Delete old streams from this source
+      await streamsDB.deleteBySource(sourceId);
+
+      // Parse all streams
+      const allParsed = parseM3U(m3uContent, sourceId);
+      const existing  = await streamsDB.getAll();
+      const baseOrder = existing.length;
+
+      let finalStreams: Stream[];
+
+      if (!modelId) {
+        // No model → keep all streams
+        finalStreams = allParsed.map((s, i) => ({ ...s, order: baseOrder + i }));
+        updatedSource.rawStreamCount = undefined;
+        updatedSource.streamCount    = allParsed.length;
+      } else {
+        const model = selectionModels.find(m => m.id === modelId);
+        if (!model) {
+          notify('Model not found', 'error');
+          return;
+        }
+
+        const { matched } = filterStreamsByModel(allParsed, model.channels);
+        const groupName   = updatedSource.selectionGroupName || model.defaultGroupName || source.name;
+
+        if (model.singleGroup) {
+          finalStreams = matched.map((s, i) => ({
+            ...s,
+            group: groupName,
+            order: baseOrder + i,
+          }));
+        } else {
+          finalStreams = matched.map((s, i) => ({ ...s, order: baseOrder + i }));
+        }
+
+        updatedSource.rawStreamCount = allParsed.length;
+        updatedSource.streamCount    = matched.length;
+      }
+
+      updatedSource.status      = 'active';
+      updatedSource.lastUpdated = Date.now();
+      updatedSource.content     = m3uContent;
+
+      await sourcesDB.put(updatedSource);
+      await streamsDB.bulkPut(finalStreams);
+
+      const allStreams = await streamsDB.getAll();
+      setStreams(allStreams.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
+      await rebuildGroups(allStreams);
+      setSources(prev => prev.map(s => s.id === sourceId ? updatedSource : s));
+
+      if (modelId) {
+        notify(`✅ Model applied: ${finalStreams.length} channels kept (${(updatedSource.rawStreamCount || 0) - finalStreams.length} filtered out)`, 'success');
+      } else {
+        notify(`✅ Model removed: all ${finalStreams.length} streams restored`, 'success');
+      }
+    } catch (e) {
+      const msg = (e as Error).message;
+      const errSrc = { ...updatedSource, status: 'error' as const, error: msg };
+      await sourcesDB.put(errSrc);
+      setSources(prev => prev.map(s => s.id === sourceId ? errSrc : s));
+      notify(`Error applying model: ${msg}`, 'error');
+    }
+  }, [sources, selectionModels, settings.corsProxy, rebuildGroups, notify]);
+
+  const updateSourceSelectionGroup = useCallback(async (sourceId: string, groupName: string) => {
+    const source = sources.find(s => s.id === sourceId);
+    if (!source) return;
+    const updated = { ...source, selectionGroupName: groupName };
+    await sourcesDB.put(updated);
+    setSources(prev => prev.map(s => s.id === sourceId ? updated : s));
+  }, [sources]);
+
+  /**
+   * combineSourceChannels — finds channels that appear in MULTIPLE sources
+   * and creates CombinedChannel entries for them automatically.
+   * The combined channels are saved and can then be synced to the backend.
+   *
+   * If sourceId is provided, only look for channels that appear in that source
+   * AND at least one other source. If null, scan all enabled streams.
+   */
+  const combineSourceChannels = useCallback(async (
+    sourceId: string | null,
+    groupName = '⭐ Best Streams'
+  ): Promise<number> => {
+    const allStreams = sourceId
+      ? streams  // we need all streams to find cross-source matches
+      : streams;
+
+    const enabled = allStreams.filter(s => s.enabled);
+
+    // If a specific source is provided, filter to only include channels from that source
+    // that ALSO exist in at least one other source
+    const toSearch = sourceId
+      ? enabled.filter(s => {
+          if (s.sourceId !== sourceId) return true; // include all other sources for comparison
+          return true;
+        })
+      : enabled;
+
+    const grouped = groupStreamsByChannel(toSearch, 2);
+
+    if (grouped.size === 0) {
+      notify('No channels found in multiple sources to combine', 'info');
+      return 0;
+    }
+
+    // If sourceId provided, only keep groups that include that source
+    const filtered = sourceId
+      ? new Map([...grouped].filter(([, val]) =>
+          val.streams.some(s => s.sourceId === sourceId)
+        ))
+      : grouped;
+
+    if (filtered.size === 0) {
+      notify(`No channels from this source appear in other sources`, 'info');
+      return 0;
+    }
+
+    // Create CombinedChannel entries
+    const newCombined: CombinedChannel[] = [];
+    const existing = combinedChannels.map(c => c.name.toLowerCase());
+
+    for (const [, val] of filtered) {
+      // Skip if already combined
+      if (existing.includes(val.name.toLowerCase())) continue;
+
+      const logo = val.streams.find(s => s.logo)?.logo || '';
+      newCombined.push({
+        id        : `comb_auto_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        name      : val.name,
+        group     : groupName,
+        logo,
+        streamUrls: val.streams.map(s => s.url),
+        enabled   : true,
+        createdAt : Date.now(),
+      });
+    }
+
+    if (newCombined.length === 0) {
+      notify('All matching channels are already combined', 'info');
+      return 0;
+    }
+
+    const next = [...combinedChannels, ...newCombined];
+    localStorage.setItem('jash_combined_channels', JSON.stringify(next));
+    setCombinedChannels(next);
+    notify(`✅ Combined ${newCombined.length} channels from multiple sources into "${groupName}"`, 'success');
+    return newCombined.length;
+  }, [streams, combinedChannels, notify]);
+
   return {
-    sources, streams, groups, settings, combinedChannels, activeTab, loading, notification,
+    sources, streams, groups, settings, combinedChannels, selectionModels,
+    activeTab, loading, notification,
     setActiveTab, notify,
     addSource, refreshSource, deleteSource, toggleSource,
     updateStream, deleteStream, bulkDeleteStreams, bulkMoveStreams, bulkToggleStreams,
@@ -390,6 +616,8 @@ export function useAppStore() {
     exportConfigData, importConfigData,
     downloadM3U, getM3UContent, getM3UBlobUrl,
     saveCombinedChannels, addCombinedChannel, deleteCombinedChannel, toggleCombinedChannel,
+    saveSelectionModel, deleteSelectionModel, applyModelToSource, updateSourceSelectionGroup,
+    combineSourceChannels,
     loadAll,
   };
 }

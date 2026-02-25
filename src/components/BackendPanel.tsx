@@ -196,10 +196,10 @@ export const BackendPanel: React.FC<Props> = ({ store }) => {
           <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {[
-                { label: 'Streams', value: health.streams.toLocaleString(), icon: '📺', color: 'text-blue-400' },
-                { label: 'Groups',  value: health.groups,                   icon: '📂', color: 'text-purple-400' },
-                { label: 'Cache',   value: health.cache,                    icon: '⚡', color: 'text-yellow-400' },
-                { label: 'Uptime',  value: `${Math.floor(health.uptime / 60)}m`, icon: '⏱️', color: 'text-emerald-400' },
+                { label: 'Streams',  value: health.streams.toLocaleString(),                                                             icon: '📺', color: 'text-blue-400' },
+                { label: 'Groups',   value: health.groups,                                                                               icon: '📂', color: 'text-purple-400' },
+                { label: '⭐ Best',  value: (health as unknown as Record<string,unknown>).autoCombined as number ?? 0,                  icon: '⭐', color: 'text-yellow-400' },
+                { label: 'Uptime',   value: `${Math.floor(health.uptime / 60)}m`,                                                       icon: '⏱️', color: 'text-emerald-400' },
               ].map(s => (
                 <div key={s.label} className="bg-gray-800/60 border border-gray-700/50 rounded-xl p-3 text-center">
                   <div className="text-lg mb-0.5">{s.icon}</div>
@@ -238,6 +238,25 @@ export const BackendPanel: React.FC<Props> = ({ store }) => {
           </div>
         </div>
 
+        {/* Auto-combine info */}
+        <div className="bg-yellow-900/20 border border-yellow-700/30 rounded-xl px-4 py-3 text-xs text-yellow-200/80 space-y-1.5">
+          <div className="font-semibold text-yellow-300 flex items-center gap-2">
+            <span>⭐</span> Auto-Combine (Runs Automatically)
+          </div>
+          <div>
+            When the same channel exists in <strong>multiple sources</strong>, the backend automatically
+            groups them into one catalog entry under <strong>⭐ Best Streams</strong>.
+          </div>
+          <div className="space-y-0.5 text-yellow-200/60">
+            <div>• "Sun TV HD" (Source A) + "Sun TV 4K" (Source B) → <strong className="text-yellow-300">one "Sun TV" entry</strong> with 2 quality streams</div>
+            <div>• "Zee Tamil HD" (Source A) + "Zee Tamil 4K" (Source B) → <strong className="text-yellow-300">one "Zee Tamil" entry</strong></div>
+            <div>• "Zee Marathi" is <strong>never</strong> mixed with "Zee Tamil" — language words are preserved</div>
+          </div>
+          <div className="text-yellow-300/80 pt-0.5">
+            No configuration needed — just sync and it works automatically!
+          </div>
+        </div>
+
         {/* Sync stats */}
         <div className="bg-gray-700/40 border border-gray-600/50 rounded-xl p-4 grid grid-cols-3 gap-3 text-center">
           <div>
@@ -257,18 +276,29 @@ export const BackendPanel: React.FC<Props> = ({ store }) => {
         {/* Last sync result */}
         {lastSync && (
           <div className={cn(
-            'flex items-center gap-3 px-4 py-3 rounded-lg text-sm',
+            'px-4 py-3 rounded-lg text-sm space-y-1',
             lastSync.ok
               ? 'bg-emerald-900/30 border border-emerald-700/40 text-emerald-300'
               : 'bg-orange-900/30 border border-orange-700/40 text-orange-300'
           )}>
-            <span>{lastSync.ok ? '✅' : '⚠️'}</span>
-            <span>
-              {lastSync.ok
-                ? `Synced ${lastSync.streams?.toLocaleString()} streams to backend`
-                : lastSync.error
-              }
-            </span>
+            <div className="flex items-center gap-2">
+              <span>{lastSync.ok ? '✅' : '⚠️'}</span>
+              <span>
+                {lastSync.ok
+                  ? `Synced ${lastSync.streams?.toLocaleString()} streams to backend`
+                  : lastSync.error
+                }
+              </span>
+            </div>
+            {lastSync.ok && typeof (lastSync as unknown as Record<string, unknown>).autoCombined === 'number' && (
+              <div className="text-xs text-emerald-200/70 flex items-center gap-2 ml-6">
+                <span>⭐</span>
+                <span>
+                  {(lastSync as unknown as Record<string, unknown>).autoCombined as number} channels auto-combined
+                  from multiple sources → appear in <strong>⭐ Best Streams</strong> catalog
+                </span>
+              </div>
+            )}
           </div>
         )}
 

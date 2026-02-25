@@ -28,6 +28,31 @@ export interface Source {
   lastUpdated?: number;
   status: 'active' | 'error' | 'loading';
   error?: string;
+  /** If set, only channels matching this model are kept when source is parsed */
+  selectionModelId?: string;
+  /** Group name to assign matched channels (defaults to source name) */
+  selectionGroupName?: string;
+  /** Original stream count before model filtering */
+  rawStreamCount?: number;
+}
+
+/**
+ * A Selection Model is a named list of channel patterns.
+ * When applied to a source, only matching channels are kept.
+ * Matching is liberal — "Sun TV" matches "Sun TV HD", "SunTV 4K", "SUN TV USA" etc.
+ */
+export interface SelectionModel {
+  id: string;
+  name: string;
+  /** One channel name per line. Liberal fuzzy matching applied. */
+  channels: string[];
+  /** If true, matched streams are grouped under a single group */
+  singleGroup: boolean;
+  /** Default group name for matched streams */
+  defaultGroupName: string;
+  createdAt: number;
+  updatedAt: number;
+  isBuiltIn?: boolean;
 }
 
 export interface Group {
@@ -71,7 +96,7 @@ export interface CombinedChannel {
   createdAt: number;
 }
 
-export type Tab = 'sources' | 'streams' | 'groups' | 'health' | 'statistics' | 'combine' | 'handler' | 'export' | 'backend' | 'settings' | 'install';
+export type Tab = 'sources' | 'streams' | 'groups' | 'health' | 'statistics' | 'combine' | 'handler' | 'export' | 'backend' | 'settings' | 'install' | 'models';
 
 export interface ParsedM3U {
   streams: Omit<Stream, 'id' | 'sourceId' | 'enabled' | 'status'>[];

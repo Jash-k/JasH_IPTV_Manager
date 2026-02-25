@@ -15,10 +15,11 @@ const tabs: { id: Tab; label: string; icon: string; highlight?: string; badge?: 
   { id: 'groups',     label: 'Groups',    icon: '📂' },
   { id: 'health',     label: 'Health',    icon: '❤️' },
   { id: 'statistics', label: 'Stats',     icon: '📊' },
-  { id: 'combine',    label: 'Combine',   icon: '🔗', highlight: 'indigo', badge: 'NEW' },
+  { id: 'models',     label: 'Models',    icon: '🎯', highlight: 'rose',   badge: 'NEW' },
+  { id: 'combine',    label: 'Combine',   icon: '🔗', highlight: 'indigo', badge: 'MQ'  },
   { id: 'handler',    label: 'Handler',   icon: '🧩', highlight: 'blue',   badge: 'HLS' },
-  { id: 'export',     label: 'Export',    icon: '⬇️', highlight: 'green',  badge: '↓' },
-  { id: 'backend',    label: 'Backend',   icon: '🖥️', highlight: 'violet', badge: 'LIVE' },
+  { id: 'export',     label: 'Export',    icon: '⬇️', highlight: 'green',  badge: '↓'   },
+  { id: 'backend',    label: 'Backend',   icon: '🖥️', highlight: 'violet', badge: 'LIVE'},
   { id: 'settings',   label: 'Settings',  icon: '⚙️' },
   { id: 'install',    label: 'Install',   icon: '🔌' },
 ];
@@ -78,6 +79,27 @@ export const Header: React.FC<Props> = ({
             const isGreen  = tab.highlight === 'green';
             const isViolet = tab.highlight === 'violet';
             const isIndigo = tab.highlight === 'indigo';
+            const isRose   = tab.highlight === 'rose';
+
+            const activeClass = isBlue   ? 'bg-blue-900/60 text-blue-300 border-blue-500'
+              : isGreen   ? 'bg-emerald-900/60 text-emerald-300 border-emerald-500'
+              : isViolet  ? 'bg-violet-900/60 text-violet-300 border-violet-500'
+              : isIndigo  ? 'bg-indigo-900/60 text-indigo-300 border-indigo-500'
+              : isRose    ? 'bg-rose-900/60 text-rose-300 border-rose-500'
+              :             'bg-gray-800 text-white border-purple-500';
+
+            const inactiveClass = isBlue   ? 'text-blue-400 border-transparent hover:text-blue-300 hover:bg-blue-900/30'
+              : isGreen   ? 'text-emerald-400 border-transparent hover:text-emerald-300 hover:bg-emerald-900/30'
+              : isViolet  ? 'text-violet-400 border-transparent hover:text-violet-300 hover:bg-violet-900/30'
+              : isIndigo  ? 'text-indigo-400 border-transparent hover:text-indigo-300 hover:bg-indigo-900/30'
+              : isRose    ? 'text-rose-400 border-transparent hover:text-rose-300 hover:bg-rose-900/30'
+              :             'text-gray-400 border-transparent hover:text-gray-200 hover:bg-gray-800/50';
+
+            const badgeClass = isBlue   ? 'bg-blue-500/20 text-blue-400 border-blue-500/40'
+              : isGreen   ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
+              : isIndigo  ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/40'
+              : isRose    ? 'bg-rose-500/20 text-rose-400 border-rose-500/40'
+              :             'bg-violet-500/20 text-violet-400 border-violet-500/40';
 
             return (
               <button
@@ -85,38 +107,13 @@ export const Header: React.FC<Props> = ({
                 onClick={() => setActiveTab(tab.id)}
                 className={cn(
                   'flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-t-lg transition-all whitespace-nowrap border-b-2 focus:outline-none focus:ring-2 focus:ring-purple-500',
-                  isActive
-                    ? isBlue
-                      ? 'bg-blue-900/60 text-blue-300 border-blue-500'
-                      : isGreen
-                        ? 'bg-emerald-900/60 text-emerald-300 border-emerald-500'
-                        : isViolet
-                          ? 'bg-violet-900/60 text-violet-300 border-violet-500'
-                          : isIndigo
-                            ? 'bg-indigo-900/60 text-indigo-300 border-indigo-500'
-                            : 'bg-gray-800 text-white border-purple-500'
-                    : isBlue
-                      ? 'text-blue-400 border-transparent hover:text-blue-300 hover:bg-blue-900/30'
-                      : isGreen
-                        ? 'text-emerald-400 border-transparent hover:text-emerald-300 hover:bg-emerald-900/30'
-                        : isViolet
-                          ? 'text-violet-400 border-transparent hover:text-violet-300 hover:bg-violet-900/30'
-                          : isIndigo
-                            ? 'text-indigo-400 border-transparent hover:text-indigo-300 hover:bg-indigo-900/30'
-                            : 'text-gray-400 border-transparent hover:text-gray-200 hover:bg-gray-800/50'
+                  isActive ? activeClass : inactiveClass
                 )}
               >
                 <span>{tab.icon}</span>
                 <span className="hidden sm:inline">{tab.label}</span>
-                {/* Highlight badge */}
                 {tab.badge && tab.highlight && !isActive && (
-                  <span className={cn(
-                    'hidden sm:inline text-xs px-1.5 py-0.5 rounded-full leading-none border',
-                    isBlue   ? 'bg-blue-500/20 text-blue-400 border-blue-500/40'
-                    : isGreen  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-                    : isIndigo ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/40'
-                               : 'bg-violet-500/20 text-violet-400 border-violet-500/40'
-                  )}>
+                  <span className={cn('hidden sm:inline text-xs px-1.5 py-0.5 rounded-full leading-none border', badgeClass)}>
                     {isViolet && backendOnline ? (
                       <span className="flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-violet-400 inline-block" />
