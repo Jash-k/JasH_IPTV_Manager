@@ -12,16 +12,19 @@ import { InstallTab } from './components/InstallTab';
 import { ExportPanel } from './components/ExportPanel';
 import { StreamHandlerTab } from './components/StreamHandlerTab';
 import { BackendPanel } from './components/BackendPanel';
-import { CombineStreamsTab } from './components/CombineStreamsTab';
 import { SelectionModelsTab } from './components/SelectionModelsTab';
+import IPTVPlayer from './components/IPTVPlayer';
+import MovieAddonTab from './components/MovieAddonTab';
 import { checkBackendHealth } from './utils/backendSync';
+import { Stream } from './types';
 
 export function App() {
   const store = useAppStore();
   const { activeTab, setActiveTab, loading, notification, streams, sources, downloadM3U } = store;
 
   const [floatDownloading, setFloatDownloading] = useState(false);
-  const [backendOnline, setBackendOnline] = useState(false);
+  const [backendOnline, setBackendOnline]       = useState(false);
+  const [playerStream, setPlayerStream]         = useState<Stream | null>(null);
 
   // Poll backend health every 30s
   useEffect(() => {
@@ -34,6 +37,11 @@ export function App() {
     const interval = setInterval(check, 30_000);
     return () => { mounted = false; clearInterval(interval); };
   }, []);
+
+  const handleOpenPlayer = useCallback((stream: Stream) => {
+    setPlayerStream(stream);
+    setActiveTab('player');
+  }, [setActiveTab]);
 
   const handleFloatDownload = useCallback(() => {
     setFloatDownloading(true);
@@ -59,11 +67,12 @@ export function App() {
     );
   }
 
+  const isPlayerTab = activeTab === 'player';
+  const isMovieTab  = activeTab === 'movies';
+
   return (
     <div className="min-h-screen bg-gray-950 text-white">
-      {notification && (
-        <Notification msg={notification.msg} type={notification.type} />
-      )}
+      {notification && <Notification msg={notification.msg} type={notification.type} />}
 
       <Header
         activeTab={activeTab}
@@ -73,95 +82,107 @@ export function App() {
         backendOnline={backendOnline}
       />
 
-      <main className="max-w-screen-2xl mx-auto px-4 py-6">
-        <div className="animate-fade-in">
-          {activeTab === 'sources'    && <SourcesTab          store={store} />}
-          {activeTab === 'streams'    && <StreamsTab          store={store} />}
-          {activeTab === 'groups'     && <GroupsTab           store={store} />}
-          {activeTab === 'health'     && <HealthTab           store={store} />}
-          {activeTab === 'statistics' && <StatisticsTab       store={store} />}
-          {activeTab === 'models'     && <SelectionModelsTab  store={store} />}
-          {activeTab === 'combine'    && <CombineStreamsTab    store={store} />}
-          {activeTab === 'handler'    && <StreamHandlerTab    store={store} />}
-          {activeTab === 'export'     && <ExportPanel         store={store} />}
-          {activeTab === 'backend'    && <BackendPanel        store={store} />}
-          {activeTab === 'settings'   && <SettingsTab         store={store} />}
-          {activeTab === 'install'    && <InstallTab          store={store} />}
+      {/* Player tab — full screen below header */}
+      {isPlayerTab ? (
+        <div className="fixed inset-0 top-[calc(3.5rem+2.75rem)] bg-black z-30">
+          <IPTVPlayer
+            initialStream={playerStream}
+            onClose={() => { setActiveTab('streams'); setPlayerStream(null); }}
+            embedded={true}
+          />
         </div>
-      </main>
+      ) : isMovieTab ? (
+        /* Movie addon tab — full height */
+        <div className="fixed inset-0 top-[calc(3.5rem+2.75rem)] bg-gray-950 z-30 overflow-hidden">
+          <MovieAddonTab />
+        </div>
+      ) : (
+        <main className="max-w-screen-2xl mx-auto px-4 py-6">
+          <div className="animate-fade-in">
+            {activeTab === 'sources'    && <SourcesTab         store={store} />}
+            {activeTab === 'streams'    && <StreamsTab         store={store} onOpenPlayer={handleOpenPlayer} />}
+            {activeTab === 'groups'     && <GroupsTab          store={store} />}
+            {activeTab === 'health'     && <HealthTab          store={store} />}
+            {activeTab === 'statistics' && <StatisticsTab      store={store} />}
+            {activeTab === 'models'     && <SelectionModelsTab store={store} />}
+            {activeTab === 'handler'    && <StreamHandlerTab   store={store} />}
+            {activeTab === 'export'     && <ExportPanel        store={store} />}
+            {activeTab === 'backend'    && <BackendPanel       store={store} />}
+            {activeTab === 'settings'   && <SettingsTab        store={store} />}
+            {activeTab === 'install'    && <InstallTab         store={store} />}
+          </div>
+        </main>
+      )}
 
-      <footer className="border-t border-gray-800 mt-12 py-5 px-4">
-        <div className="max-w-screen-2xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-gray-600">
-          <div className="flex items-center gap-2">
-            <span className="text-purple-500">📡</span>
-            <span className="font-semibold text-gray-500">JASH ADDON</span>
-            <span>— Stremio IPTV Configurator · Samsung Tizen Optimized</span>
+      {!isPlayerTab && !isMovieTab && (
+        <footer className="border-t border-gray-800 mt-12 py-5 px-4">
+          <div className="max-w-screen-2xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-gray-600">
+            <div className="flex items-center gap-2">
+              <span className="text-purple-500">📡</span>
+              <span className="font-semibold text-gray-500">JASH ADDON</span>
+              <span>— Stremio IPTV Configurator · Samsung Tizen Optimized</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <span className={backendOnline ? 'text-violet-400' : 'text-gray-600'}>
+                {backendOnline ? '🖥️ Backend Online' : '🖥️ Backend Offline'}
+              </span>
+              <span className="text-gray-700">•</span>
+              <span className="text-blue-500">🧩 HLS Extraction</span>
+              <span className="text-gray-700">•</span>
+              <span>{streams.length.toLocaleString()} streams</span>
+              <span className="text-gray-700">•</span>
+              <span>{sources.length} sources</span>
+            </div>
           </div>
-          <div className="flex items-center gap-4">
-            <span className={backendOnline ? 'text-violet-400' : 'text-gray-600'}>
-              {backendOnline ? '🖥️ Backend Online' : '🖥️ Backend Offline'}
-            </span>
-            <span className="text-gray-700">•</span>
-            <span className="text-blue-500">🧩 HLS Extraction</span>
-            <span className="text-gray-700">•</span>
-            <span>{streams.length.toLocaleString()} streams</span>
-            <span className="text-gray-700">•</span>
-            <span>{sources.length} sources</span>
-          </div>
-        </div>
-      </footer>
+        </footer>
+      )}
 
       {/* Floating action buttons */}
-      {streams.length > 0 && activeTab !== 'export' && activeTab !== 'handler' && activeTab !== 'backend' && (
+      {streams.length > 0 && !isPlayerTab && !isMovieTab &&
+        activeTab !== 'export' && activeTab !== 'handler' && activeTab !== 'backend' && (
         <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end gap-2">
-          {/* Stream count badge */}
           <div className="flex items-center gap-2 bg-gray-900 border border-gray-700 rounded-xl px-3 py-1.5 text-xs text-gray-300 shadow-lg">
             <span className="text-emerald-400 font-bold">{streams.filter(s => s.enabled).length.toLocaleString()}</span>
-            <span>enabled streams</span>
+            <span>enabled</span>
           </div>
-
           <div className="flex items-center gap-2">
-            {/* Download M3U */}
-            <button
-              onClick={handleFloatDownload}
-              title="Download M3U Playlist"
-              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white px-4 py-3 rounded-xl font-semibold text-sm transition-all shadow-xl hover:shadow-emerald-500/25 active:scale-95"
-            >
-              <span className="text-lg">{floatDownloading ? '✅' : '⬇️'}</span>
-              <span className="hidden sm:inline">{floatDownloading ? 'Downloaded!' : 'Download M3U'}</span>
+            <button onClick={() => setActiveTab('movies')} title="Movie Addon"
+              className="flex items-center gap-2 bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white px-4 py-3 rounded-xl font-semibold text-sm transition-all shadow-xl active:scale-95">
+              <span className="text-lg">🎬</span>
+              <span className="hidden sm:inline">Movies</span>
             </button>
-
-            {/* Backend shortcut */}
-            <button
-              onClick={() => setActiveTab('backend')}
-              title="Backend & Stremio Addon"
-              className={`p-3 rounded-xl font-medium text-sm transition-all shadow-xl active:scale-95 border ${
-                backendOnline
-                  ? 'bg-violet-800/80 hover:bg-violet-700 border-violet-600/50 hover:border-violet-500 text-white'
-                  : 'bg-gray-800 hover:bg-gray-700 border-gray-600 text-gray-400'
-              }`}
-            >
+            <button onClick={() => setActiveTab('player')} title="Open IPTV Player"
+              className="flex items-center gap-2 bg-gradient-to-r from-orange-600 to-rose-600 hover:from-orange-500 hover:to-rose-500 text-white px-4 py-3 rounded-xl font-semibold text-sm transition-all shadow-xl active:scale-95">
+              <span className="text-lg">▶️</span>
+              <span className="hidden sm:inline">Player</span>
+            </button>
+            <button onClick={handleFloatDownload} title="Download M3U"
+              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white px-4 py-3 rounded-xl font-semibold text-sm transition-all shadow-xl active:scale-95">
+              <span className="text-lg">{floatDownloading ? '✅' : '⬇️'}</span>
+              <span className="hidden sm:inline">{floatDownloading ? 'Done!' : 'M3U'}</span>
+            </button>
+            <button onClick={() => setActiveTab('backend')} title="Backend"
+              className={`p-3 rounded-xl text-sm transition-all shadow-xl active:scale-95 border ${
+                backendOnline ? 'bg-violet-800/80 hover:bg-violet-700 border-violet-600/50 text-white' : 'bg-gray-800 hover:bg-gray-700 border-gray-600 text-gray-400'
+              }`}>
               <span className="text-lg">🖥️</span>
             </button>
-
-            {/* Handler shortcut */}
-            <button
-              onClick={() => setActiveTab('handler')}
-              title="Stream Handler & HLS Extractor"
-              className="bg-blue-800/80 hover:bg-blue-700 border border-blue-600/50 hover:border-blue-500 text-white p-3 rounded-xl font-medium text-sm transition-all shadow-xl active:scale-95"
-            >
+            <button onClick={() => setActiveTab('handler')} title="HLS Handler"
+              className="bg-blue-800/80 hover:bg-blue-700 border border-blue-600/50 text-white p-3 rounded-xl text-sm transition-all shadow-xl active:scale-95">
               <span className="text-lg">🧩</span>
             </button>
-
-            {/* Export tab shortcut */}
-            <button
-              onClick={() => setActiveTab('export')}
-              title="Export Options"
-              className="bg-gray-800 hover:bg-gray-700 border border-gray-600 hover:border-emerald-500/50 text-white p-3 rounded-xl font-medium text-sm transition-all shadow-xl active:scale-95"
-            >
-              <span className="text-lg">🎛️</span>
-            </button>
           </div>
+        </div>
+      )}
+
+      {/* Back button from player/movies tab */}
+      {(isPlayerTab || isMovieTab) && (
+        <div className="fixed bottom-6 left-6 z-40">
+          <button
+            onClick={() => { setActiveTab(isMovieTab ? 'sources' : 'streams'); setPlayerStream(null); }}
+            className="flex items-center gap-2 bg-gray-900/90 hover:bg-gray-800 border border-gray-700 text-white px-4 py-2.5 rounded-xl text-sm transition-all shadow-xl">
+            ← Back
+          </button>
         </div>
       )}
     </div>

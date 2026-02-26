@@ -16,10 +16,11 @@ const tabs: { id: Tab; label: string; icon: string; highlight?: string; badge?: 
   { id: 'health',     label: 'Health',    icon: '❤️' },
   { id: 'statistics', label: 'Stats',     icon: '📊' },
   { id: 'models',     label: 'Models',    icon: '🎯', highlight: 'rose',   badge: 'NEW' },
-  { id: 'combine',    label: 'Combine',   icon: '🔗', highlight: 'indigo', badge: 'MQ'  },
   { id: 'handler',    label: 'Handler',   icon: '🧩', highlight: 'blue',   badge: 'HLS' },
   { id: 'export',     label: 'Export',    icon: '⬇️', highlight: 'green',  badge: '↓'   },
   { id: 'backend',    label: 'Backend',   icon: '🖥️', highlight: 'violet', badge: 'LIVE'},
+  { id: 'player',     label: 'Player',    icon: '▶️',  highlight: 'orange', badge: 'TV'  },
+  { id: 'movies',     label: 'Movies',    icon: '🎬', highlight: 'yellow', badge: 'NEW' },
   { id: 'settings',   label: 'Settings',  icon: '⚙️' },
   { id: 'install',    label: 'Install',   icon: '🔌' },
 ];
@@ -80,12 +81,16 @@ export const Header: React.FC<Props> = ({
             const isViolet = tab.highlight === 'violet';
             const isIndigo = tab.highlight === 'indigo';
             const isRose   = tab.highlight === 'rose';
+            const isOrange = tab.highlight === 'orange';
+            const isYellow = tab.highlight === 'yellow';
 
             const activeClass = isBlue   ? 'bg-blue-900/60 text-blue-300 border-blue-500'
               : isGreen   ? 'bg-emerald-900/60 text-emerald-300 border-emerald-500'
               : isViolet  ? 'bg-violet-900/60 text-violet-300 border-violet-500'
               : isIndigo  ? 'bg-indigo-900/60 text-indigo-300 border-indigo-500'
               : isRose    ? 'bg-rose-900/60 text-rose-300 border-rose-500'
+              : isOrange  ? 'bg-orange-900/60 text-orange-300 border-orange-500'
+              : isYellow  ? 'bg-yellow-900/60 text-yellow-300 border-yellow-500'
               :             'bg-gray-800 text-white border-purple-500';
 
             const inactiveClass = isBlue   ? 'text-blue-400 border-transparent hover:text-blue-300 hover:bg-blue-900/30'
@@ -93,12 +98,16 @@ export const Header: React.FC<Props> = ({
               : isViolet  ? 'text-violet-400 border-transparent hover:text-violet-300 hover:bg-violet-900/30'
               : isIndigo  ? 'text-indigo-400 border-transparent hover:text-indigo-300 hover:bg-indigo-900/30'
               : isRose    ? 'text-rose-400 border-transparent hover:text-rose-300 hover:bg-rose-900/30'
+              : isOrange  ? 'text-orange-400 border-transparent hover:text-orange-300 hover:bg-orange-900/30'
+              : isYellow  ? 'text-yellow-400 border-transparent hover:text-yellow-300 hover:bg-yellow-900/30'
               :             'text-gray-400 border-transparent hover:text-gray-200 hover:bg-gray-800/50';
 
             const badgeClass = isBlue   ? 'bg-blue-500/20 text-blue-400 border-blue-500/40'
               : isGreen   ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
               : isIndigo  ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/40'
               : isRose    ? 'bg-rose-500/20 text-rose-400 border-rose-500/40'
+              : isOrange  ? 'bg-orange-500/20 text-orange-400 border-orange-500/40'
+              : isYellow  ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40'
               :             'bg-violet-500/20 text-violet-400 border-violet-500/40';
 
             return (

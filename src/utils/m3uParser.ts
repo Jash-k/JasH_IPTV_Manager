@@ -7,6 +7,14 @@ export interface ParsedStream {
   group: string;
   tvgId?: string;
   tvgName?: string;
+  // Extended stream metadata
+  licenseType?: string;    // clearkey, widevine, playready
+  licenseKey?: string;     // DRM key (clearkey: "kid:key")
+  userAgent?: string;      // Custom User-Agent
+  referer?: string;        // HTTP Referer
+  cookie?: string;         // HTTP Cookie
+  httpHeaders?: Record<string, string>; // All custom HTTP headers
+  streamType?: 'hls' | 'dash' | 'direct'; // Stream protocol type
 }
 
 function extractAttribute(line: string, attr: string): string | undefined {
@@ -30,20 +38,90 @@ function extractName(extinf: string): string {
   return 'Unknown Channel';
 }
 
+function detectStreamType(url: string): 'hls' | 'dash' | 'direct' {
+  const u = url.toLowerCase();
+  if (u.includes('.mpd') || u.includes('/dash/') || u.includes('manifest.mpd')) return 'dash';
+  if (u.includes('.m3u8') || u.includes('/hls/') || u.includes('playlist.m3u')) return 'hls';
+  return 'direct';
+}
+
 export function parseM3U(content: string, sourceId: string): Stream[] {
   const lines = content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const streams: Stream[] = [];
+
   let currentExtInf: string | null = null;
+  let pendingLicenseType: string | undefined;
+  let pendingLicenseKey: string | undefined;
+  let pendingUserAgent: string | undefined;
+  let pendingReferer: string | undefined;
+  let pendingCookie: string | undefined;
+  let pendingHeaders: Record<string, string> = {};
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
     if (line.startsWith('#EXTINF:')) {
       currentExtInf = line;
-    } else if (line.startsWith('#')) {
-      // skip other directives
-      continue;
-    } else if (line.startsWith('http') || line.startsWith('rtmp') || line.startsWith('rtsp') || line.endsWith('.m3u8') || line.endsWith('.ts')) {
+      // Reset pending metadata for new stream
+      pendingLicenseType = undefined;
+      pendingLicenseKey = undefined;
+      pendingUserAgent = undefined;
+      pendingReferer = undefined;
+      pendingCookie = undefined;
+      pendingHeaders = {};
+    }
+
+    // ── DRM / Kodi properties ─────────────────────────────────────────────
+    else if (line.startsWith('#KODIPROP:')) {
+      const prop = line.replace('#KODIPROP:', '');
+      if (prop.startsWith('inputstream.adaptive.license_type=')) {
+        pendingLicenseType = prop.split('=').slice(1).join('=').trim();
+      } else if (prop.startsWith('inputstream.adaptive.license_key=')) {
+        pendingLicenseKey = prop.split('=').slice(1).join('=').trim();
+      }
+    }
+
+    // ── VLC options ───────────────────────────────────────────────────────
+    else if (line.startsWith('#EXTVLCOPT:')) {
+      const opt = line.replace('#EXTVLCOPT:', '').trim();
+      if (opt.startsWith('http-user-agent=')) {
+        pendingUserAgent = opt.replace('http-user-agent=', '').trim();
+      } else if (opt.startsWith('http-referrer=') || opt.startsWith('http-referer=')) {
+        pendingReferer = opt.split('=').slice(1).join('=').trim();
+      }
+    }
+
+    // ── HTTP headers (cookie, etc.) via #EXTHTTP ──────────────────────────
+    // Format: #EXTHTTP:{"cookie":"...","User-Agent":"..."}
+    else if (line.startsWith('#EXTHTTP:')) {
+      try {
+        const jsonStr = line.replace('#EXTHTTP:', '').trim();
+        const headers = JSON.parse(jsonStr);
+        if (headers.cookie || headers.Cookie) {
+          pendingCookie = headers.cookie || headers.Cookie;
+        }
+        if (headers['User-Agent'] || headers['user-agent']) {
+          pendingUserAgent = pendingUserAgent || headers['User-Agent'] || headers['user-agent'];
+        }
+        // Store all headers
+        Object.entries(headers).forEach(([k, v]) => {
+          pendingHeaders[k] = String(v);
+        });
+      } catch { /* invalid JSON — ignore */ }
+    }
+
+    // ── Stream URL ────────────────────────────────────────────────────────
+    else if (
+      !line.startsWith('#') &&
+      (
+        line.startsWith('http') ||
+        line.startsWith('rtmp') ||
+        line.startsWith('rtsp') ||
+        line.endsWith('.m3u8') ||
+        line.endsWith('.mpd') ||
+        line.endsWith('.ts')
+      )
+    ) {
       const url = line;
       let name = 'Unknown Channel';
       let logo: string | undefined;
@@ -60,7 +138,10 @@ export function parseM3U(content: string, sourceId: string): Stream[] {
         currentExtInf = null;
       }
 
-      streams.push({
+      const streamType = detectStreamType(url);
+
+      // Build the stream — include all extended metadata
+      const stream: Stream = {
         id: `${sourceId}_${streams.length}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         name,
         url,
@@ -71,7 +152,30 @@ export function parseM3U(content: string, sourceId: string): Stream[] {
         sourceId,
         enabled: true,
         status: 'unknown',
-      });
+        streamType,
+        // DRM / headers metadata
+        ...(pendingLicenseType && { licenseType: pendingLicenseType }),
+        ...(pendingLicenseKey  && { licenseKey:  pendingLicenseKey }),
+        ...(pendingUserAgent   && { userAgent:   pendingUserAgent }),
+        ...(pendingReferer     && { referer:     pendingReferer }),
+        ...(pendingCookie      && { cookie:      pendingCookie }),
+        ...(Object.keys(pendingHeaders).length > 0 && { httpHeaders: { ...pendingHeaders } }),
+      };
+
+      streams.push(stream);
+
+      // Reset pending metadata
+      pendingLicenseType = undefined;
+      pendingLicenseKey  = undefined;
+      pendingUserAgent   = undefined;
+      pendingReferer     = undefined;
+      pendingCookie      = undefined;
+      pendingHeaders     = {};
+    }
+
+    // Skip other directives
+    else if (line.startsWith('#')) {
+      continue;
     }
   }
 

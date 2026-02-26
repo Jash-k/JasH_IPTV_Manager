@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { AppConfig, Source, Stream, Group, Settings, Tab, CombinedChannel, SelectionModel } from '../types';
 import { sourcesDB, streamsDB, groupsDB, settingsDB, getDefaultSettings, exportConfig, importConfig } from '../utils/db';
 import { parseM3U, fetchM3U } from '../utils/m3uParser';
+import { parseJsonSource, looksLikeJson } from '../utils/jsonSourceParser';
 import { downloadM3UFile, generateM3U, generateM3UBlobUrl } from '../utils/m3uExporter';
 import { filterStreamsByModel, BUILT_IN_MODELS, groupStreamsByChannel } from '../utils/channelMatcher';
 
@@ -96,28 +97,44 @@ export function useAppStore() {
 
   // ─── Sources ──────────────────────────────────────────────────────────────
 
+  /**
+   * Parse content (M3U or JSON) into Stream objects.
+   * Auto-detects format from content string.
+   */
+  const parseSourceContent = useCallback((content: string, sourceId: string): Stream[] => {
+    if (looksLikeJson(content)) {
+      return parseJsonSource(content, sourceId);
+    }
+    return parseM3U(content, sourceId);
+  }, []);
+
   const addSource = useCallback(async (source: Source, content?: string) => {
     source.status = 'loading';
     await sourcesDB.put(source);
     setSources(prev => [...prev.filter(s => s.id !== source.id), source].sort((a, b) => a.priority - b.priority));
 
     try {
-      let m3uContent = content || '';
+      let rawContent = content || '';
 
-      if (!content && source.type === 'url' && source.url) {
-        m3uContent = await fetchM3U(source.url, settings.corsProxy);
+      if (!content && (source.type === 'url' || source.type === 'json') && source.url) {
+        rawContent = await fetchM3U(source.url, settings.corsProxy);
       } else if (!content && source.type === 'single' && source.url) {
-        m3uContent = `#EXTM3U\n#EXTINF:-1 group-title="${source.name}",${source.name}\n${source.url}`;
+        rawContent = `#EXTM3U\n#EXTINF:-1 group-title="${source.name}",${source.name}\n${source.url}`;
       }
 
       const existing  = await streamsDB.getAll();
       const nextOrder = existing.length;
-      const parsed    = parseM3U(m3uContent, source.id).map((s, i) => ({ ...s, order: nextOrder + i }));
+      const parsed    = parseSourceContent(rawContent, source.id).map((s, i) => ({ ...s, order: nextOrder + i }));
 
       source.streamCount = parsed.length;
       source.status      = 'active';
       source.lastUpdated = Date.now();
-      source.content     = m3uContent;
+      source.content     = rawContent;
+
+      // Schedule next auto-refresh if interval is set
+      if (source.autoRefreshInterval && source.autoRefreshInterval > 0) {
+        source.nextAutoRefresh = Date.now() + source.autoRefreshInterval * 60 * 1000;
+      }
 
       await sourcesDB.put(source);
       await streamsDB.bulkPut(parsed);
@@ -134,20 +151,20 @@ export function useAppStore() {
       setSources(prev => prev.map(s => s.id === source.id ? source : s));
       notify(`Error: ${(e as Error).message}`, 'error');
     }
-  }, [settings.corsProxy, rebuildGroups, notify]);
+  }, [settings.corsProxy, rebuildGroups, notify, parseSourceContent]);
 
-  const refreshSource = useCallback(async (sourceId: string) => {
+  const refreshSource = useCallback(async (sourceId: string, silent = false) => {
     const source = sources.find(s => s.id === sourceId);
     if (!source) return;
 
-    setSources(prev => prev.map(s => s.id === sourceId ? { ...s, status: 'loading' } : s));
+    if (!silent) setSources(prev => prev.map(s => s.id === sourceId ? { ...s, status: 'loading' } : s));
 
     try {
-      let m3uContent = '';
-      if (source.type === 'url' && source.url) {
-        m3uContent = await fetchM3U(source.url, settings.corsProxy);
+      let rawContent = '';
+      if ((source.type === 'url' || source.type === 'json') && source.url) {
+        rawContent = await fetchM3U(source.url, settings.corsProxy);
       } else if (source.content) {
-        m3uContent = source.content;
+        rawContent = source.content;
       }
 
       // Get existing order base
@@ -156,28 +173,36 @@ export function useAppStore() {
       const baseOrder = srcStreams.length ? Math.min(...srcStreams.map(s => s.order ?? 0)) : existing.length;
 
       await streamsDB.deleteBySource(sourceId);
-      const parsed = parseM3U(m3uContent, sourceId).map((s, i) => ({ ...s, order: baseOrder + i }));
+      const parsed = parseSourceContent(rawContent, sourceId).map((s, i) => ({ ...s, order: baseOrder + i }));
       await streamsDB.bulkPut(parsed);
 
-      source.streamCount = parsed.length;
-      source.status      = 'active';
-      source.lastUpdated = Date.now();
-      source.content     = m3uContent;
-      await sourcesDB.put(source);
+      const updatedSource: Source = {
+        ...source,
+        streamCount   : parsed.length,
+        status        : 'active',
+        lastUpdated   : Date.now(),
+        lastAutoRefresh: Date.now(),
+        content       : rawContent,
+        nextAutoRefresh: source.autoRefreshInterval && source.autoRefreshInterval > 0
+          ? Date.now() + source.autoRefreshInterval * 60 * 1000
+          : undefined,
+      };
+      await sourcesDB.put(updatedSource);
 
       const allStreams = await streamsDB.getAll();
       setStreams(allStreams.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
       await rebuildGroups(allStreams);
-      setSources(prev => prev.map(s => s.id === sourceId ? source : s));
-      notify(`Refreshed: ${source.name} (${parsed.length} streams)`, 'success');
+      setSources(prev => prev.map(s => s.id === sourceId ? updatedSource : s));
+      if (!silent) notify(`Refreshed: ${source.name} (${parsed.length} streams)`, 'success');
+      return true;
     } catch (e) {
-      source.status = 'error';
-      source.error  = (e as Error).message;
-      await sourcesDB.put(source);
-      setSources(prev => prev.map(s => s.id === sourceId ? source : s));
-      notify(`Refresh failed: ${(e as Error).message}`, 'error');
+      const errSrc: Source = { ...source, status: 'error', error: (e as Error).message };
+      await sourcesDB.put(errSrc);
+      setSources(prev => prev.map(s => s.id === sourceId ? errSrc : s));
+      if (!silent) notify(`Refresh failed: ${(e as Error).message}`, 'error');
+      return false;
     }
-  }, [sources, settings.corsProxy, rebuildGroups, notify]);
+  }, [sources, settings.corsProxy, rebuildGroups, notify, parseSourceContent]);
 
   const deleteSource = useCallback(async (sourceId: string) => {
     await streamsDB.deleteBySource(sourceId);
@@ -196,6 +221,86 @@ export function useAppStore() {
     await sourcesDB.put(updated);
     setSources(prev => prev.map(s => s.id === sourceId ? updated : s));
   }, [sources]);
+
+  /**
+   * Set auto-refresh interval (in minutes) for a URL/JSON source.
+   * 0 = disabled. Immediately updates the source and schedules next refresh.
+   */
+  const setAutoRefresh = useCallback(async (sourceId: string, intervalMinutes: number) => {
+    const src = sources.find(s => s.id === sourceId);
+    if (!src) return;
+    const updated: Source = {
+      ...src,
+      autoRefreshInterval: intervalMinutes,
+      nextAutoRefresh: intervalMinutes > 0 ? Date.now() + intervalMinutes * 60 * 1000 : undefined,
+    };
+    await sourcesDB.put(updated);
+    setSources(prev => prev.map(s => s.id === sourceId ? updated : s));
+    if (intervalMinutes > 0) {
+      notify(`Auto-refresh set to every ${intervalMinutes} min for "${src.name}"`, 'success');
+    } else {
+      notify(`Auto-refresh disabled for "${src.name}"`, 'info');
+    }
+  }, [sources, notify]);
+
+  // ── Auto-refresh timer — checks every 60 seconds if any source needs refresh ──
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const allSources = await sourcesDB.getAll();
+      const now = Date.now();
+      for (const src of allSources) {
+        if (
+          src.enabled &&
+          src.autoRefreshInterval &&
+          src.autoRefreshInterval > 0 &&
+          (src.type === 'url' || src.type === 'json') &&
+          src.url &&
+          src.nextAutoRefresh &&
+          now >= src.nextAutoRefresh
+        ) {
+          console.log(`[AutoRefresh] Refreshing "${src.name}"…`);
+          // Re-read sources fresh from DB for this call
+          setSources(prev => {
+            // Trigger a silent refresh — we do this via a side-effect
+            // by reading the latest sources from DB directly
+            return prev;
+          });
+          // Silent refresh
+          try {
+            const rawContent = await fetchM3U(src.url, settings.corsProxy);
+            const existing   = await streamsDB.getAll();
+            const srcStreams  = existing.filter(s => s.sourceId === src.id);
+            const baseOrder  = srcStreams.length ? Math.min(...srcStreams.map(s => s.order ?? 0)) : existing.length;
+            await streamsDB.deleteBySource(src.id);
+            const parsed = parseSourceContent(rawContent, src.id).map((s, i) => ({ ...s, order: baseOrder + i }));
+            await streamsDB.bulkPut(parsed);
+            const updatedSrc: Source = {
+              ...src,
+              streamCount   : parsed.length,
+              status        : 'active',
+              lastUpdated   : now,
+              lastAutoRefresh: now,
+              content       : rawContent,
+              nextAutoRefresh: now + src.autoRefreshInterval * 60 * 1000,
+            };
+            await sourcesDB.put(updatedSrc);
+            const allStreams = await streamsDB.getAll();
+            setStreams(allStreams.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)));
+            await rebuildGroups(allStreams);
+            setSources(prev => prev.map(s => s.id === src.id ? updatedSrc : s));
+            notify(`🔄 Auto-refreshed: ${src.name} (${parsed.length} streams)`, 'info');
+          } catch (e) {
+            const errSrc: Source = { ...src, status: 'error', error: (e as Error).message, nextAutoRefresh: now + src.autoRefreshInterval * 60 * 1000 };
+            await sourcesDB.put(errSrc);
+            setSources(prev => prev.map(s => s.id === src.id ? errSrc : s));
+          }
+        }
+      }
+    }, 60_000); // Check every 60 seconds
+
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.corsProxy, rebuildGroups, notify, parseSourceContent]);
 
   // ─── Streams ──────────────────────────────────────────────────────────────
 
@@ -456,8 +561,8 @@ export function useAppStore() {
       // Delete old streams from this source
       await streamsDB.deleteBySource(sourceId);
 
-      // Parse all streams
-      const allParsed = parseM3U(m3uContent, sourceId);
+      // Parse all streams (auto-detect M3U or JSON)
+      const allParsed = parseSourceContent(m3uContent, sourceId);
       const existing  = await streamsDB.getAll();
       const baseOrder = existing.length;
 
@@ -516,7 +621,7 @@ export function useAppStore() {
       setSources(prev => prev.map(s => s.id === sourceId ? errSrc : s));
       notify(`Error applying model: ${msg}`, 'error');
     }
-  }, [sources, selectionModels, settings.corsProxy, rebuildGroups, notify]);
+  }, [sources, selectionModels, settings.corsProxy, rebuildGroups, notify, parseSourceContent]);
 
   const updateSourceSelectionGroup = useCallback(async (sourceId: string, groupName: string) => {
     const source = sources.find(s => s.id === sourceId);
@@ -608,7 +713,7 @@ export function useAppStore() {
     sources, streams, groups, settings, combinedChannels, selectionModels,
     activeTab, loading, notification,
     setActiveTab, notify,
-    addSource, refreshSource, deleteSource, toggleSource,
+    addSource, refreshSource, deleteSource, toggleSource, setAutoRefresh,
     updateStream, deleteStream, bulkDeleteStreams, bulkMoveStreams, bulkToggleStreams,
     updateStreamStatus, reorderStreams,
     createGroup, deleteGroup, renameGroup,

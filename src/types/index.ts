@@ -13,12 +13,29 @@ export interface Stream {
   lastChecked?: number;
   /** Manual sort order — set by drag-and-drop reorder */
   order?: number;
+
+  // ── Extended stream metadata (parsed from #KODIPROP / #EXTVLCOPT / #EXTHTTP) ──
+  /** Protocol type detected from URL */
+  streamType?: 'hls' | 'dash' | 'direct';
+  /** DRM type: 'clearkey' | 'widevine' | 'playready' */
+  licenseType?: string;
+  /** DRM key pair(s): "kid:key" for clearkey, or license server URL for Widevine */
+  licenseKey?: string;
+  /** Custom User-Agent header */
+  userAgent?: string;
+  /** HTTP Referer header */
+  referer?: string;
+  /** HTTP Cookie header */
+  cookie?: string;
+  /** All custom HTTP headers from #EXTHTTP */
+  httpHeaders?: Record<string, string>;
 }
 
 export interface Source {
   id: string;
   name: string;
-  type: 'url' | 'file' | 'cloud' | 'single' | 'manual';
+  /** 'json' = URL or file returning JSON array of stream objects (JioTV format etc.) */
+  type: 'url' | 'file' | 'cloud' | 'single' | 'manual' | 'json';
   url?: string;
   content?: string;
   cloudProvider?: 'gdrive' | 'dropbox' | 'onedrive';
@@ -34,6 +51,12 @@ export interface Source {
   selectionGroupName?: string;
   /** Original stream count before model filtering */
   rawStreamCount?: number;
+  /** Auto-refresh interval in minutes (0 = disabled) */
+  autoRefreshInterval?: number;
+  /** Timestamp of last auto-refresh attempt */
+  lastAutoRefresh?: number;
+  /** Next scheduled auto-refresh time */
+  nextAutoRefresh?: number;
 }
 
 /**
@@ -96,7 +119,66 @@ export interface CombinedChannel {
   createdAt: number;
 }
 
-export type Tab = 'sources' | 'streams' | 'groups' | 'health' | 'statistics' | 'combine' | 'handler' | 'export' | 'backend' | 'settings' | 'install' | 'models';
+export type Tab = 'sources' | 'streams' | 'groups' | 'health' | 'statistics' | 'handler' | 'export' | 'backend' | 'settings' | 'install' | 'models' | 'player' | 'movies';
+
+// ── Movie Addon Types ────────────────────────────────────────────────────────
+
+export interface MovieStream {
+  id: string;
+  title: string;
+  year?: number;
+  url: string;
+  quality?: string;  // '720p' | '1080p' | '4K' | '480p' etc.
+  size?: string;
+  codec?: string;
+  language?: string;
+  source?: string;
+  logo?: string;
+  group?: string;
+  sourceId: string;
+  enabled: boolean;
+  // TMDB / IMDB metadata
+  tmdbId?: number;
+  imdbId?: string;
+  poster?: string;
+  backdrop?: string;
+  overview?: string;
+  rating?: number;
+  genres?: string[];
+  releaseDate?: string;
+  runtime?: number;
+  // DRM
+  licenseType?: string;
+  licenseKey?: string;
+  userAgent?: string;
+  cookie?: string;
+  httpHeaders?: Record<string, string>;
+}
+
+export interface MovieSource {
+  id: string;
+  name: string;
+  type: 'url' | 'file' | 'json';
+  url?: string;
+  content?: string;
+  enabled: boolean;
+  streamCount: number;
+  lastUpdated?: number;
+  status: 'active' | 'error' | 'loading' | 'idle';
+  error?: string;
+  autoRefreshInterval?: number;
+  nextAutoRefresh?: number;
+}
+
+export interface MovieAddonSettings {
+  addonId: string;
+  addonName: string;
+  tmdbApiKey: string;
+  autoFetchMetadata: boolean;
+  removeDuplicates: boolean;
+  combineQualities: boolean;
+  defaultLanguage: string;
+}
 
 export interface ParsedM3U {
   streams: Omit<Stream, 'id' | 'sourceId' | 'enabled' | 'status'>[];

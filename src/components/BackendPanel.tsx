@@ -12,6 +12,7 @@ import {
   checkBackendHealth,
   getManifestUrl,
   getStremioInstallUrl,
+  getShortPlaylistUrls,
   clearBackendCache,
   BackendHealth,
   SyncResult,
@@ -35,9 +36,10 @@ export const BackendPanel: React.FC<Props> = ({ store }) => {
 
   const [showInstallGuide, setShowInstallGuide] = useState(false);
 
-  const manifestUrl    = getManifestUrl();
+  const manifestUrl     = getManifestUrl();
   const stremioDeepLink = getStremioInstallUrl();
-  const enabledStreams  = streams.filter(s => s.enabled);
+  const shortUrls       = getShortPlaylistUrls();
+  const enabledStreams   = streams.filter(s => s.enabled);
 
   // ── Health check ────────────────────────────────────────────────────────────
   const checkHealth = useCallback(async () => {
@@ -355,6 +357,41 @@ export const BackendPanel: React.FC<Props> = ({ store }) => {
         <h3 className="text-white font-semibold flex items-center gap-2">
           <span>🔌</span> Install in Stremio
         </h3>
+
+        {/* 🔗 Playlist URL for IPTV players */}
+        <div className="bg-emerald-900/20 border border-emerald-700/40 rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2 text-emerald-300 font-semibold text-sm">
+            <span>📻</span> M3U Playlist URL — For IPTV Players (Tivimate, OTT Navigator, VLC…)
+          </div>
+          <p className="text-emerald-200/60 text-xs">
+            Use this permanent URL in any IPTV player. Updates automatically when you sync — no re-adding needed.
+          </p>
+
+          {/* Main playlist URL */}
+          <div className="space-y-2">
+            {Object.entries(shortUrls).map(([key, url]) => (
+              <div key={key} className="flex items-center gap-2">
+                <div className="flex-1 bg-gray-900 border border-emerald-700/40 rounded-lg px-3 py-2 font-mono text-emerald-300 text-xs truncate">
+                  {url}
+                </div>
+                <button
+                  onClick={() => copy(url, `pl-${key}`)}
+                  className={cn(
+                    'px-3 py-2 rounded-lg text-xs font-semibold transition-all flex-shrink-0',
+                    copied === `pl-${key}` ? 'bg-emerald-600 text-white' : 'bg-emerald-800 hover:bg-emerald-700 text-emerald-200'
+                  )}
+                >
+                  {copied === `pl-${key}` ? '✅' : '📋'}
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="bg-emerald-950/50 border border-emerald-700/20 rounded-lg px-3 py-2 text-xs text-emerald-200/50">
+            💡 All URLs serve the same playlist. Use the shortest one your TV keyboard allows.
+            Per-group URLs available in the <strong className="text-emerald-300">Export → Playlist URLs</strong> tab.
+          </div>
+        </div>
 
         {/* ⚠️ Important: HTTP Manifest URL (what you paste in Stremio) */}
         <div className="bg-blue-900/20 border border-blue-700/40 rounded-xl p-4 space-y-2">

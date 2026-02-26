@@ -62,6 +62,62 @@ export function getStremioInstallUrl(): string {
 }
 
 /**
+ * Main playlist URL — short, memorable, permanent.
+ * Use in Tivimate, OTT Navigator, GSE IPTV, VLC, Kodi, etc.
+ */
+export function getPlaylistUrl(): string {
+  return `${getBackendBase()}/playlist.m3u`;
+}
+
+/**
+ * Short alias URLs — even shorter for easy TV typing.
+ */
+export function getShortPlaylistUrls(): Record<string, string> {
+  const base = getBackendBase();
+  return {
+    main    : `${base}/playlist.m3u`,
+    short   : `${base}/p.m3u`,
+    iptv    : `${base}/iptv.m3u`,
+    live    : `${base}/live.m3u`,
+    channels: `${base}/channels.m3u`,
+  };
+}
+
+/**
+ * Per-group playlist URL.
+ */
+export function getGroupPlaylistUrl(groupName: string): string {
+  const base = getBackendBase();
+  return `${base}/playlist/${encodeURIComponent(groupName)}.m3u`;
+}
+
+/**
+ * Fetch playlist info from backend (stream count, group URLs, etc.)
+ */
+export interface PlaylistInfo {
+  total      : number;
+  groups     : number;
+  playlistUrl: string;
+  shortUrls  : Record<string, string>;
+  groupUrls  : Array<{ group: string; url: string; count: number }>;
+  addonName  : string;
+  manifestUrl: string;
+}
+
+export async function fetchPlaylistInfo(): Promise<PlaylistInfo | null> {
+  const base = getBackendBase();
+  try {
+    const res = await fetch(`${base}/api/playlist-info`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    return await res.json() as PlaylistInfo;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sync the full configuration to the backend.
  * After this call, the backend bumps its manifest version so
  * Stremio detects new channels without requiring addon reinstall.
