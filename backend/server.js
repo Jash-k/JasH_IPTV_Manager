@@ -282,10 +282,23 @@ function normalizeMovieTitle(title) {
     .trim();
 }
 
-// Group movies by normalized title+year, combining quality variants
-function groupMovies(streams) {
-  const map = new Map();
+// Get unique source groups from streams
+function getMovieSources(streams) {
+  const seen = new Map();
   for (const s of streams) {
+    const grp = s.group || s.source || 'Movies';
+    if (!seen.has(grp)) seen.set(grp, { name: grp, sourceId: s.sourceId, count: 0 });
+    seen.get(grp).count++;
+  }
+  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Group movies by normalized title+year, combining quality variants
+// optionally filtered to a specific source group
+function groupMovies(streams, sourceGroup) {
+  const filtered = sourceGroup ? streams.filter(s => (s.group || s.source || 'Movies') === sourceGroup) : streams;
+  const map = new Map();
+  for (const s of filtered) {
     const key = normalizeMovieTitle(s.title) + '_' + (s.year || '');
     if (!map.has(key)) {
       map.set(key, {
@@ -298,6 +311,7 @@ function groupMovies(streams) {
         genres: s.genres || [],
         releaseDate: s.releaseDate,
         runtime: s.runtime,
+        sourceGroup: s.group || s.source || 'Movies',
         streams: [],
       });
     }
@@ -312,7 +326,7 @@ function groupMovies(streams) {
     if (!g.rating   && s.rating)               g.rating    = s.rating;
     if ((!g.genres || !g.genres.length) && s.genres?.length) g.genres = s.genres;
     // prefer shorter cleaner title
-    if ((s.title || '').length < (g.title || '').length) g.title = s.title;
+    if ((s.title||'').length < (g.title||'').length && s.title && s.title !== 'Unknown') g.title = s.title;
   }
   return [...map.values()].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
 }
@@ -324,6 +338,34 @@ function removeDupMovieStreams(streams) {
     if (!seen.has(key)) seen.set(key, s);
   }
   return [...seen.values()];
+}
+
+// ── M3U title parser (backend) ─────────────────────────────────────────────────
+// Extracts clean title, year, quality from tvg-name or comma-name
+function parseMovieTitleBackend(raw) {
+  let s = (raw || '').trim();
+  // detect quality
+  let quality = 'HD';
+  if (/\b(2160p|4k|uhd)\b/i.test(s)) quality = '4K';
+  else if (/\b(1080p|fhd)\b/i.test(s)) quality = '1080p';
+  else if (/\b(720p)\b/i.test(s)) quality = '720p';
+  else if (/\b(480p|sd)\b/i.test(s)) quality = '480p';
+
+  // remove quality brackets
+  s = s.replace(/[\(\[]\s*(4k|uhd|2160p|fhd|1080p|720p|480p|360p|hd|sd)\s*[\)\]]/gi, '');
+
+  // extract year
+  let year;
+  const ym = s.match(/[\(\[]((?:19|20)\d{2})[\)\]]/);
+  if (ym) { year = parseInt(ym[1]); s = s.replace(ym[0], ''); }
+  else {
+    const ty = s.match(/\s+((?:19|20)\d{2})\s*$/);
+    if (ty) { year = parseInt(ty[1]); s = s.replace(ty[0], ''); }
+  }
+
+  // clean up
+  s = s.replace(/[\(\[\]\)]+/g, ' ').replace(/\s+/g, ' ').replace(/[-_]+$/, '').trim();
+  return { title: s || 'Unknown', year, quality };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -391,21 +433,23 @@ function buildIptvManifest() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildMovieManifest() {
-  const settings = getMovieSettings();
-  const streams  = getEnabledMovies();
-  const movies   = groupMovies(streams);
-  const version  = getVersion(MOV_FILE);
+  const settings    = getMovieSettings();
+  const streams     = getEnabledMovies();
+  const allMovies   = groupMovies(streams);
+  const movieSrcs   = getMovieSources(streams);
+  const version     = getVersion(MOV_FILE);
 
-  const allGenres = [...new Set(streams.flatMap(s => s.genres || []).filter(Boolean))].sort().slice(0, 30);
-  const allYears  = [...new Set(streams.map(s => s.year).filter(y => y && y > 1900))].sort((a, b) => b - a).slice(0, 30);
+  const allGenres   = [...new Set(streams.flatMap(s => s.genres || []).filter(Boolean))].sort().slice(0, 30);
+  const allYears    = [...new Set(streams.map(s => s.year).filter(y => y && y > 1900))].sort((a, b) => b - a).slice(0, 30);
 
   const defaultGenres = ['Action','Drama','Comedy','Thriller','Horror','Sci-Fi','Romance','Animation','Documentary'];
   const genreOptions  = allGenres.length ? allGenres : defaultGenres;
   const yearOptions   = allYears.length  ? allYears.map(String) : [];
 
+  // ── Fixed catalogs ────────────────────────────────────────────────────────
   const catalogs = [
     {
-      type: 'movie', id: 'jmov_all', name: settings.addonName,
+      type: 'movie', id: 'jmov_all', name: settings.addonName || MOVIE_NAME,
       extra: [
         { name: 'search', isRequired: false },
         { name: 'genre',  isRequired: false, options: genreOptions },
@@ -441,14 +485,28 @@ function buildMovieManifest() {
     });
   }
 
+  // ── Per-source catalogs (each source = separate catalog) ──────────────────
+  movieSrcs.forEach((src, i) => {
+    const safeId = `jmov_src_${i}`;
+    catalogs.push({
+      type: 'movie', id: safeId, name: `📂 ${src.name}`,
+      extra: [
+        { name: 'search', isRequired: false },
+        { name: 'genre',  isRequired: false, options: genreOptions },
+        { name: 'skip',   isRequired: false },
+      ],
+    });
+  });
+
   return {
     id         : MOVIE_ID,
     version,
     name       : settings.addonName || MOVIE_NAME,
     description: [
       settings.addonName || MOVIE_NAME,
-      movies.length  ? `${movies.length} movies`  : 'Add movie sources in configurator',
-      streams.length ? `${streams.length} streams` : '',
+      allMovies.length ? `${allMovies.length} movies`  : 'Add movie sources in configurator',
+      streams.length   ? `${streams.length} streams`   : '',
+      movieSrcs.length ? `${movieSrcs.length} sources` : '',
       'TMDB · HD · DRM',
     ].filter(Boolean).join(' · '),
     logo: `${PUBLIC_URL}/movie-logo.png`,
@@ -528,68 +586,78 @@ function handleIptvCatalog(catId, extra) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function handleMovieCatalog(catId, extra) {
-  const streams = getEnabledMovies();
-  const search  = (extra.search || '').toLowerCase().trim();
-  const genre   = (extra.genre  || '').trim();
-  const skip    = parseInt(extra.skip  || '0', 10) || 0;
-  const PAGE    = 100;
+  const allStreams = getEnabledMovies();
+  const search    = (extra.search || '').toLowerCase().trim();
+  const genre     = (extra.genre  || '').trim();
+  const skip      = parseInt(extra.skip || '0', 10) || 0;
+  const PAGE      = 100;
 
-  let groups = groupMovies(streams);
+  // ── Per-source catalog (jmov_src_N) ────────────────────────────────────
+  const srcMatch = catId.match(/^jmov_src_(\d+)$/);
+  if (srcMatch) {
+    const srcIdx  = parseInt(srcMatch[1]);
+    const sources = getMovieSources(allStreams);
+    const src     = sources[srcIdx];
+    if (!src) return { metas: [] };
+    let groups = groupMovies(allStreams, src.name);
+    if (search) groups = groups.filter(g => (g.title||'').toLowerCase().includes(search));
+    if (genre)  groups = groups.filter(g => (g.genres||[]).some(gn => gn.toLowerCase().includes(genre.toLowerCase())));
+    const page  = groups.slice(skip, skip + PAGE);
+    return { metas: page.map(g => buildMovieMeta(g)) };
+  }
 
-  // ── Filter by catalog type ────────────────────────────────────────────────
+  // ── All movies ────────────────────────────────────────────────────────────
+  let groups = groupMovies(allStreams);
+
   if (catId === 'jmov_hd') {
-    // 720p, 1080p — exclude UHD/4K
     groups = groups.filter(g => g.streams.some(s =>
       s.quality === '1080p' || s.quality === 'FHD' || s.quality === '720p' || s.quality === 'HD'
     ));
   } else if (catId === 'jmov_top') {
     groups = groups.filter(g => (g.rating || 0) >= 7.0)
-      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+      .sort((a, b) => (b.rating||0) - (a.rating||0));
   } else if (catId === 'jmov_year') {
-    // genre param is used as the year selector in Stremio
+    // In Stremio, "genre" param is reused as year filter for jmov_year
     if (genre) groups = groups.filter(g => String(g.year) === genre);
   }
 
-  // ── Genre filter (not for year catalog) ──────────────────────────────────
+  // Genre filter (skip for year catalog — genre param is used as year there)
   if (genre && catId !== 'jmov_year') {
     groups = groups.filter(g =>
-      (g.genres || []).some(gn => gn.toLowerCase().includes(genre.toLowerCase())) ||
-      g.streams.some(s => (s.group || '').toLowerCase().includes(genre.toLowerCase()))
+      (g.genres||[]).some(gn => gn.toLowerCase().includes(genre.toLowerCase())) ||
+      g.streams.some(s => (s.group||'').toLowerCase().includes(genre.toLowerCase()))
     );
   }
 
-  // ── Search ────────────────────────────────────────────────────────────────
-  if (search) {
-    groups = groups.filter(g => (g.title || '').toLowerCase().includes(search));
-  }
+  if (search) groups = groups.filter(g => (g.title||'').toLowerCase().includes(search));
 
-  const page  = groups.slice(skip, skip + PAGE);
-  const metas = page.map(g => {
-    const qualities = [...new Set(g.streams.map(s => s.quality).filter(Boolean))];
-    const qualStr   = qualities.slice(0, 3).join(' · ');
-    const movieId   = `jmov${encodeId(g.key)}`;
-    return {
-      id         : movieId,
-      type       : 'movie',
-      name       : g.title,
-      year       : g.year,
-      poster     : g.poster || null,
-      background : g.backdrop || g.poster || null,
-      logo       : g.poster || null,
-      description: [
-        g.overview,
-        qualStr ? `Quality: ${qualStr}` : null,
-        g.streams.length > 1 ? `${g.streams.length} streams available` : null,
-      ].filter(Boolean).join('\n\n') || null,
-      imdbRating : g.rating ? String(g.rating.toFixed(1)) : null,
-      genres     : g.genres || [],
-      releaseInfo: g.year ? String(g.year) : null,
-      runtime    : g.runtime ? `${g.runtime} min` : null,
-    };
-  });
+  const page = groups.slice(skip, skip + PAGE);
+  debug(`[MOVIE-CAT] ${catId} → ${page.length}/${groups.length} (skip=${skip})`);
+  return { metas: page.map(g => buildMovieMeta(g)) };
+}
 
-  debug(`[MOVIE-CAT] ${catId} → ${metas.length}/${groups.length} (skip=${skip} search="${search}" genre="${genre}")`);
-  return { metas };
+function buildMovieMeta(g) {
+  const qualities = [...new Set(g.streams.map(s => s.quality).filter(Boolean))];
+  const qualStr   = qualities.slice(0, 4).join(' · ');
+  return {
+    id         : `jmov${encodeId(g.key)}`,
+    type       : 'movie',
+    name       : g.title,
+    year       : g.year,
+    poster     : g.poster    || null,
+    background : g.backdrop  || g.poster || null,
+    logo       : g.poster    || null,
+    description: [
+      g.overview,
+      qualStr ? `Quality: ${qualStr}` : null,
+      g.streams.length > 1 ? `${g.streams.length} stream options` : null,
+      g.sourceGroup ? `Source: ${g.sourceGroup}` : null,
+    ].filter(Boolean).join('\n\n') || null,
+    imdbRating : g.rating  ? String(g.rating.toFixed(1))  : null,
+    genres     : g.genres  || [],
+    releaseInfo: g.year    ? String(g.year) : null,
+    runtime    : g.runtime ? `${g.runtime} min` : null,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -616,22 +684,16 @@ async function handleMovieMeta(rawId) {
   }
 
   const qualities = [...new Set(g.streams.map(s => s.quality).filter(Boolean))];
+  const base      = buildMovieMeta(g);
   return {
     meta: {
-      id, type: 'movie', name: g.title, year: g.year,
-      poster     : g.poster    || null,
-      background : g.backdrop  || g.poster || null,
-      logo       : g.poster    || null,
+      ...base, id,
       description: [
         g.overview,
         qualities.length ? `Available in: ${qualities.join(', ')}` : null,
         g.streams.length > 1 ? `${g.streams.length} stream sources` : null,
       ].filter(Boolean).join('\n\n') || null,
-      imdbRating : g.rating  ? String(g.rating.toFixed(1)) : null,
-      genres     : g.genres  || [],
-      releaseInfo: g.year    ? String(g.year) : null,
-      runtime    : g.runtime ? `${g.runtime} min` : null,
-      imdbId     : g.imdbId  || null,
+      imdbId: g.imdbId || null,
     },
   };
 }
@@ -1232,30 +1294,40 @@ const server = http.createServer(async (req, res) => {
 
         // Background: enrich movies without metadata (non-blocking)
         if (tmdbKey) {
-          const toEnrich = movies.filter(m => !m.tmdbId).slice(0, 50);
+          const toEnrich = movies.filter(m => !m.tmdbId && m.title && m.title !== 'Unknown').slice(0, 100);
           if (toEnrich.length > 0) {
             log(`[TMDB] Starting background enrichment for ${toEnrich.length} movies…`);
             (async () => {
               let enriched = 0;
+              // Keep a live copy of streams so we can update incrementally
+              let liveStreams = [...cfg.streams];
               for (const m of toEnrich) {
                 try {
                   const meta = await fetchTmdbMeta(m.title, m.year, tmdbKey);
-                  if (meta) {
-                    // Update all stream entries for this movie
-                    const updatedStreams = cfg.streams.map(s => {
+                  if (meta && meta.tmdbId) {
+                    liveStreams = liveStreams.map(s => {
                       const sk = normalizeMovieTitle(s.title) + '_' + (s.year || '');
                       if (sk === m.key) return { ...s, ...meta };
                       return s;
                     });
-                    cfg.streams = updatedStreams;
                     enriched++;
+                    // Save every 10 enrichments
+                    if (enriched % 10 === 0) {
+                      fs.writeFileSync(MOV_FILE, JSON.stringify({ ...cfg, streams: liveStreams }, null, 2), 'utf8');
+                      log(`[TMDB] ✅ Enriched ${enriched} so far…`);
+                    }
                   }
-                  await new Promise(r => setTimeout(r, 250)); // rate limit
-                } catch { /* ignore */ }
+                  await new Promise(r => setTimeout(r, 300)); // ~3 req/s rate limit
+                } catch(e) {
+                  if (e.message && e.message.includes('401')) {
+                    err('[TMDB] Invalid API key — stopping enrichment');
+                    break;
+                  }
+                }
               }
               if (enriched > 0) {
-                fs.writeFileSync(MOV_FILE, JSON.stringify(cfg, null, 2), 'utf8');
-                log(`[TMDB] ✅ Enriched ${enriched} movies`);
+                fs.writeFileSync(MOV_FILE, JSON.stringify({ ...cfg, streams: liveStreams }, null, 2), 'utf8');
+                log(`[TMDB] ✅ Final: enriched ${enriched} movies`);
               }
             })().catch(e => err('[TMDB] background enrichment error:', e.message));
           }
