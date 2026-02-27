@@ -1024,11 +1024,25 @@ const MovieAddonTab: React.FC = () => {
                   <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer"
                     className="text-yellow-400 text-xs ml-2 hover:underline">Get free key →</a>
                 </label>
-                <input type="password" placeholder="Enter your TMDB API key..."
+
+                {/* Env var notice — most important */}
+                <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 mb-2">
+                  <p className="text-orange-300 text-xs font-semibold mb-1">⭐ Recommended: Use Environment Variable</p>
+                  <p className="text-gray-400 text-xs">Set <code className="bg-black/30 text-orange-300 px-1 py-0.5 rounded">TMDB_API_KEY=your_key</code> in your Render/Koyeb/Railway environment variables.</p>
+                  <p className="text-gray-500 text-xs mt-1">The env var is loaded automatically by the backend and is more secure than storing it in the browser.</p>
+                  <div className="mt-2 bg-black/30 rounded p-2 font-mono text-xs text-green-400">
+                    TMDB_API_KEY=a1b2c3d4e5f6...
+                  </div>
+                </div>
+
+                <input type="password" placeholder="Or enter key here for local use only..."
                   value={settings.tmdbApiKey}
                   onChange={e => setSettings(p => ({ ...p, tmdbApiKey: e.target.value }))}
                   className="w-full bg-white/5 text-white text-sm rounded-lg px-3 py-2 border border-white/10 focus:outline-none focus:border-yellow-500 placeholder-gray-500" />
-                <p className="text-gray-500 text-xs mt-1">Used to fetch movie posters, ratings, genres, and descriptions from TMDB.</p>
+                <p className="text-gray-500 text-xs mt-1">
+                  Used to fetch movie posters, ratings, genres, and descriptions from TMDB.
+                  The backend uses the env var; this field is used for local frontend metadata fetching only.
+                </p>
               </div>
 
               {[

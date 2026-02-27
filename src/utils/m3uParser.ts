@@ -7,21 +7,20 @@ export interface ParsedStream {
   group: string;
   tvgId?: string;
   tvgName?: string;
-  // Extended stream metadata
-  licenseType?: string;    // clearkey, widevine, playready
-  licenseKey?: string;     // DRM key (clearkey: "kid:key")
-  userAgent?: string;      // Custom User-Agent
-  referer?: string;        // HTTP Referer
-  cookie?: string;         // HTTP Cookie
-  httpHeaders?: Record<string, string>; // All custom HTTP headers
-  streamType?: 'hls' | 'dash' | 'direct'; // Stream protocol type
+  licenseType?: string;
+  licenseKey?: string;
+  userAgent?: string;
+  referer?: string;
+  cookie?: string;
+  httpHeaders?: Record<string, string>;
+  streamType?: 'hls' | 'dash' | 'direct';
 }
 
+// ── Attribute extractor ───────────────────────────────────────────────────────
 function extractAttribute(line: string, attr: string): string | undefined {
   const patterns = [
     new RegExp(`${attr}="([^"]*)"`, 'i'),
     new RegExp(`${attr}='([^']*)'`, 'i'),
-    new RegExp(`${attr}=([^\\s,]+)`, 'i'),
   ];
   for (const p of patterns) {
     const m = line.match(p);
@@ -30,14 +29,54 @@ function extractAttribute(line: string, attr: string): string | undefined {
   return undefined;
 }
 
+// ── Channel name extractor — precise, handles commas inside attribute values ──
+//
+// M3U format:  #EXTINF:-1 tvg-logo="url,with,commas" group-title="X", Channel Name
+//
+// Strategy:
+//   1. Find the last comma that is NOT inside a quoted attribute value
+//   2. Everything after that comma is the channel name
 function extractName(extinf: string): string {
-  const commaIdx = extinf.lastIndexOf(',');
-  if (commaIdx !== -1) {
-    return extinf.substring(commaIdx + 1).trim();
+  // Remove the #EXTINF:-1 leader and duration
+  // The line looks like: #EXTINF:-1 [attributes],Channel Name
+  // or:                  #EXTINF:0 [attributes],Channel Name
+
+  // Step 1 — strip the #EXTINF:-N  prefix
+  const withoutPrefix = extinf.replace(/^#EXTINF:\s*-?\d+(\.\d+)?\s*/, '');
+  // withoutPrefix is now: [attributes..] , Channel Name
+  //  e.g.: tvg-logo="a,b,c.jpg" group-title="Movies", 12 B
+
+  // Step 2 — walk character by character, tracking quote state
+  let inQuote = false;
+  let quoteChar = '';
+  let lastUnquotedComma = -1;
+
+  for (let i = 0; i < withoutPrefix.length; i++) {
+    const ch = withoutPrefix[i];
+    if (inQuote) {
+      if (ch === quoteChar) inQuote = false;
+    } else {
+      if (ch === '"' || ch === "'") {
+        inQuote = true;
+        quoteChar = ch;
+      } else if (ch === ',') {
+        lastUnquotedComma = i;
+      }
+    }
   }
+
+  if (lastUnquotedComma !== -1) {
+    return withoutPrefix.substring(lastUnquotedComma + 1).trim();
+  }
+
+  // Fallback: everything after the last comma (original behaviour)
+  const fallback = extinf.lastIndexOf(',');
+  if (fallback !== -1) return extinf.substring(fallback + 1).trim();
+
   return 'Unknown Channel';
 }
 
+// ── Stream type detector ──────────────────────────────────────────────────────
 function detectStreamType(url: string): 'hls' | 'dash' | 'direct' {
   const u = url.toLowerCase();
   if (u.includes('.mpd') || u.includes('/dash/') || u.includes('manifest.mpd')) return 'dash';
@@ -45,6 +84,7 @@ function detectStreamType(url: string): 'hls' | 'dash' | 'direct' {
   return 'direct';
 }
 
+// ── Main M3U parser ───────────────────────────────────────────────────────────
 export function parseM3U(content: string, sourceId: string): Stream[] {
   const lines = content.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const streams: Stream[] = [];
@@ -57,43 +97,49 @@ export function parseM3U(content: string, sourceId: string): Stream[] {
   let pendingCookie: string | undefined;
   let pendingHeaders: Record<string, string> = {};
 
+  const resetPending = () => {
+    pendingLicenseType = undefined;
+    pendingLicenseKey  = undefined;
+    pendingUserAgent   = undefined;
+    pendingReferer     = undefined;
+    pendingCookie      = undefined;
+    pendingHeaders     = {};
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
+    // ── #EXTINF ───────────────────────────────────────────────────────────
     if (line.startsWith('#EXTINF:')) {
       currentExtInf = line;
-      // Reset pending metadata for new stream
-      pendingLicenseType = undefined;
-      pendingLicenseKey = undefined;
-      pendingUserAgent = undefined;
-      pendingReferer = undefined;
-      pendingCookie = undefined;
-      pendingHeaders = {};
+      resetPending();
+      continue;
     }
 
     // ── DRM / Kodi properties ─────────────────────────────────────────────
-    else if (line.startsWith('#KODIPROP:')) {
+    if (line.startsWith('#KODIPROP:')) {
       const prop = line.replace('#KODIPROP:', '');
       if (prop.startsWith('inputstream.adaptive.license_type=')) {
         pendingLicenseType = prop.split('=').slice(1).join('=').trim();
       } else if (prop.startsWith('inputstream.adaptive.license_key=')) {
         pendingLicenseKey = prop.split('=').slice(1).join('=').trim();
       }
+      continue;
     }
 
     // ── VLC options ───────────────────────────────────────────────────────
-    else if (line.startsWith('#EXTVLCOPT:')) {
+    if (line.startsWith('#EXTVLCOPT:')) {
       const opt = line.replace('#EXTVLCOPT:', '').trim();
       if (opt.startsWith('http-user-agent=')) {
         pendingUserAgent = opt.replace('http-user-agent=', '').trim();
       } else if (opt.startsWith('http-referrer=') || opt.startsWith('http-referer=')) {
         pendingReferer = opt.split('=').slice(1).join('=').trim();
       }
+      continue;
     }
 
-    // ── HTTP headers (cookie, etc.) via #EXTHTTP ──────────────────────────
-    // Format: #EXTHTTP:{"cookie":"...","User-Agent":"..."}
-    else if (line.startsWith('#EXTHTTP:')) {
+    // ── HTTP headers via #EXTHTTP ─────────────────────────────────────────
+    if (line.startsWith('#EXTHTTP:')) {
       try {
         const jsonStr = line.replace('#EXTHTTP:', '').trim();
         const headers = JSON.parse(jsonStr);
@@ -103,15 +149,15 @@ export function parseM3U(content: string, sourceId: string): Stream[] {
         if (headers['User-Agent'] || headers['user-agent']) {
           pendingUserAgent = pendingUserAgent || headers['User-Agent'] || headers['user-agent'];
         }
-        // Store all headers
         Object.entries(headers).forEach(([k, v]) => {
           pendingHeaders[k] = String(v);
         });
       } catch { /* invalid JSON — ignore */ }
+      continue;
     }
 
     // ── Stream URL ────────────────────────────────────────────────────────
-    else if (
+    if (
       !line.startsWith('#') &&
       (
         line.startsWith('http') ||
@@ -123,26 +169,25 @@ export function parseM3U(content: string, sourceId: string): Stream[] {
       )
     ) {
       const url = line;
-      let name = 'Unknown Channel';
+      let name  = 'Unknown Channel';
       let logo: string | undefined;
       let group = 'Uncategorized';
       let tvgId: string | undefined;
       let tvgName: string | undefined;
 
       if (currentExtInf) {
-        name = extractName(currentExtInf) || 'Unknown Channel';
-        logo = extractAttribute(currentExtInf, 'tvg-logo');
-        group = extractAttribute(currentExtInf, 'group-title') || 'Uncategorized';
-        tvgId = extractAttribute(currentExtInf, 'tvg-id');
+        name    = extractName(currentExtInf) || 'Unknown Channel';
+        logo    = extractAttribute(currentExtInf, 'tvg-logo');
+        group   = extractAttribute(currentExtInf, 'group-title') || 'Uncategorized';
+        tvgId   = extractAttribute(currentExtInf, 'tvg-id');
         tvgName = extractAttribute(currentExtInf, 'tvg-name');
         currentExtInf = null;
       }
 
       const streamType = detectStreamType(url);
 
-      // Build the stream — include all extended metadata
       const stream: Stream = {
-        id: `${sourceId}_${streams.length}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        id         : `${sourceId}_${streams.length}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         name,
         url,
         logo,
@@ -150,10 +195,9 @@ export function parseM3U(content: string, sourceId: string): Stream[] {
         tvgId,
         tvgName,
         sourceId,
-        enabled: true,
-        status: 'unknown',
+        enabled    : true,
+        status     : 'unknown',
         streamType,
-        // DRM / headers metadata
         ...(pendingLicenseType && { licenseType: pendingLicenseType }),
         ...(pendingLicenseKey  && { licenseKey:  pendingLicenseKey }),
         ...(pendingUserAgent   && { userAgent:   pendingUserAgent }),
@@ -163,25 +207,18 @@ export function parseM3U(content: string, sourceId: string): Stream[] {
       };
 
       streams.push(stream);
-
-      // Reset pending metadata
-      pendingLicenseType = undefined;
-      pendingLicenseKey  = undefined;
-      pendingUserAgent   = undefined;
-      pendingReferer     = undefined;
-      pendingCookie      = undefined;
-      pendingHeaders     = {};
-    }
-
-    // Skip other directives
-    else if (line.startsWith('#')) {
+      resetPending();
+      currentExtInf = null;
       continue;
     }
+
+    // Skip other # directives
   }
 
   return streams;
 }
 
+// ── Remote M3U fetcher ────────────────────────────────────────────────────────
 export async function fetchM3U(url: string, corsProxy: string): Promise<string> {
   const proxies = [
     corsProxy,
@@ -203,16 +240,14 @@ export async function fetchM3U(url: string, corsProxy: string): Promise<string> 
   // Try proxies
   for (const proxy of proxies) {
     try {
-      const proxyUrl = proxy.includes('?') ? `${proxy}${encodeURIComponent(url)}` : `${proxy}${url}`;
+      const proxyUrl = proxy.includes('?')
+        ? `${proxy}${encodeURIComponent(url)}`
+        : `${proxy}${url}`;
       const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(15000) });
       if (resp.ok) {
         const text = await resp.text();
-        // allorigins wraps in JSON
         if (proxy.includes('allorigins')) {
-          try {
-            const json = JSON.parse(text);
-            return json.contents || text;
-          } catch { return text; }
+          try { const json = JSON.parse(text); return json.contents || text; } catch { return text; }
         }
         return text;
       }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * ╔══════════════════════════════════════════════════════════════════════════╗
- * ║         JASH ADDON — Unified Backend Server v11.0                       ║
+ * ║         JASH ADDON — Unified Backend Server v12.0                       ║
  * ║   IPTV Addon  →  /manifest.json                                         ║
  * ║   Movie Addon →  /movie/manifest.json                                   ║
  * ║   Both ready to install in Stremio on first boot                        ║
@@ -17,21 +17,22 @@ const path   = require('path');
 const urlMod = require('url');
 
 // ─── Config ────────────────────────────────────────────────────────────────────
-const PORT       = parseInt(process.env.PORT || '7000', 10);
-const DEBUG      = process.env.DEBUG === 'true';
-const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-const DIST_DIR   = path.join(__dirname, '..', 'dist');
-const CFG_FILE   = path.join(__dirname, 'streams-config.json');
-const MOV_FILE   = path.join(__dirname, 'movies-config.json');
+const PORT        = parseInt(process.env.PORT || '7000', 10);
+const DEBUG       = process.env.DEBUG === 'true';
+const PUBLIC_URL  = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const TMDB_KEY    = process.env.TMDB_API_KEY || '';   // ← Set this in Render/Koyeb env vars
+const DIST_DIR    = path.join(__dirname, '..', 'dist');
+const CFG_FILE    = path.join(__dirname, 'streams-config.json');
+const MOV_FILE    = path.join(__dirname, 'movies-config.json');
 const REQ_TIMEOUT = 20000;
 const CACHE_TTL   = 5 * 60 * 1000;
 
 // ─── Addon Identities ──────────────────────────────────────────────────────────
-const IPTV_ID      = process.env.ADDON_ID       || 'community.jash-iptv';
-const IPTV_NAME    = process.env.ADDON_NAME     || 'Jash IPTV';
-const MOVIE_ID     = process.env.MOVIE_ADDON_ID || 'community.jash-movies';
-const MOVIE_NAME   = process.env.MOVIE_ADDON_NAME || 'Jash Movies';
-const VERSION_BASE = '1.0';
+const IPTV_ID    = process.env.ADDON_ID         || 'community.jash-iptv';
+const IPTV_NAME  = process.env.ADDON_NAME       || 'Jash IPTV';
+const MOVIE_ID   = process.env.MOVIE_ADDON_ID   || 'community.jash-movies';
+const MOVIE_NAME = process.env.MOVIE_ADDON_NAME || 'Jash Movies';
+const VER_BASE   = '1.0';
 
 // ─── Logger ────────────────────────────────────────────────────────────────────
 const ts    = () => new Date().toISOString().slice(11, 23);
@@ -40,9 +41,14 @@ const debug = (...a) => DEBUG && console.log(`[${ts()}] [DBG]`, ...a);
 const err   = (...a) => console.error(`[${ts()}] [ERR]`, ...a);
 
 // ─── Caches ────────────────────────────────────────────────────────────────────
-const streamCache = new Map(); // HLS extraction cache
-function getCached(k)   { const c = streamCache.get(k); if (c && Date.now() - c.ts < CACHE_TTL) return c.v; streamCache.delete(k); return null; }
-function setCache(k, v) { streamCache.set(k, { v, ts: Date.now() }); }
+const streamCache = new Map();
+const tmdbCache   = new Map(); // title+year → TMDB metadata
+const TMDB_TTL    = 24 * 60 * 60 * 1000; // 24 hours
+
+function getCached(k)        { const c = streamCache.get(k); if (c && Date.now() - c.ts < CACHE_TTL) return c.v; streamCache.delete(k); return null; }
+function setCache(k, v)      { streamCache.set(k, { v, ts: Date.now() }); }
+function getTmdbCached(k)    { const c = tmdbCache.get(k); if (c && Date.now() - c.ts < TMDB_TTL) return c.v; tmdbCache.delete(k); return null; }
+function setTmdbCache(k, v)  { tmdbCache.set(k, { v, ts: Date.now() }); }
 
 // ─── ID helpers ────────────────────────────────────────────────────────────────
 const encodeId = s => Buffer.from(String(s), 'utf8').toString('base64url');
@@ -106,8 +112,11 @@ function defaultMovieCfg() {
 }
 function defaultMovieSettings() {
   return {
-    addonId: MOVIE_ID, addonName: MOVIE_NAME,
-    tmdbApiKey: '', combineQualities: true, removeDuplicates: true,
+    addonId          : MOVIE_ID,
+    addonName        : MOVIE_NAME,
+    tmdbApiKey       : TMDB_KEY,  // env var takes priority
+    combineQualities : true,
+    removeDuplicates : true,
     sortAlphabetically: true,
   };
 }
@@ -117,13 +126,17 @@ function loadMovieConfig() {
     const raw = fs.readFileSync(MOV_FILE, 'utf8').trim();
     if (!raw || raw === '{}') return defaultMovieCfg();
     const cfg = JSON.parse(raw);
-    return {
-      streams : Array.isArray(cfg.streams) ? cfg.streams : [],
-      settings: { ...defaultMovieSettings(), ...(cfg.settings || {}) },
-    };
+    const s = { ...defaultMovieSettings(), ...(cfg.settings || {}) };
+    // env var always overrides stored key
+    if (TMDB_KEY) s.tmdbApiKey = TMDB_KEY;
+    return { streams: Array.isArray(cfg.streams) ? cfg.streams : [], settings: s };
   } catch(e) { err('loadMovieConfig:', e.message); return defaultMovieCfg(); }
 }
-function getMovieSettings() { return { ...defaultMovieSettings(), ...(loadMovieConfig().settings || {}) }; }
+function getMovieSettings() {
+  const s = { ...defaultMovieSettings(), ...(loadMovieConfig().settings || {}) };
+  if (TMDB_KEY) s.tmdbApiKey = TMDB_KEY;
+  return s;
+}
 function getEnabledMovies() {
   const { streams } = loadMovieConfig();
   return streams.filter(s => s.enabled !== false);
@@ -134,10 +147,10 @@ function getVersion(file) {
   try {
     if (fs.existsSync(file)) {
       const patch = Math.floor(fs.statSync(file).mtimeMs / 1000) % 100000;
-      return `${VERSION_BASE}.${patch}`;
+      return `${VER_BASE}.${patch}`;
     }
   } catch { /* ok */ }
-  return `${VERSION_BASE}.0`;
+  return `${VER_BASE}.0`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -154,18 +167,21 @@ function detectType(stream) {
 function hasDRM(s) { return !!(s.licenseType || s.licenseKey); }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  CHANNEL NAME NORMALIZER
+// ██  CHANNEL NAME NORMALIZER (precise — keeps language words)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ONLY strip quality/region suffixes — NEVER language words
 const STRIP_TOKENS = new Set([
-  'hd','sd','fhd','uhd','4k','2k','8k','vip','plus','premium',
-  'backup','mirror','alt','alternate','usa','uk','us','ca','au','in',
-  'live','stream','online','channel','1080p','720p','480p','360p',
+  'hd','sd','fhd','uhd','4k','2k','8k','1080p','720p','480p','360p','2160p',
+  'vip','plus','premium','backup','mirror','alt','alternate',
+  'usa','uk','us','ca','au',
+  'live','stream','online','channel',
 ]);
+
 function normalizeKey(name) {
   return (name || '')
     .toLowerCase()
-    .replace(/[\[\(\{][^\]\)\}]*[\]\)\}]/g, ' ')
+    .replace(/[\[\(\{][^\]\)\}]*[\]\)\}]/g, ' ')  // remove brackets
     .replace(/[\-_\/\\|:]+/g, ' ')
     .replace(/[^a-z0-9 ]/g, ' ')
     .split(/\s+/)
@@ -186,6 +202,7 @@ function buildAutoCombined(streams) {
     const e = map.get(key);
     e.streams.push(s);
     e.sourceIds.add(s.sourceId || 'unknown');
+    // prefer shortest clean name
     if ((s.name || '').length < (e.name || '').length) e.name = s.name;
   }
   return [...map.entries()]
@@ -195,27 +212,77 @@ function buildAutoCombined(streams) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ██  TMDB API — backend fetch with env key
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function fetchTmdbMeta(title, year, apiKey) {
+  const key = apiKey || TMDB_KEY;
+  if (!key) return null;
+
+  const cacheKey = `${title}_${year || ''}`;
+  const cached   = getTmdbCached(cacheKey);
+  if (cached !== undefined) return cached;
+
+  try {
+    const yearParam = year ? `&year=${year}` : '';
+    const url = `https://api.themoviedb.org/3/search/movie?api_key=${key}&query=${encodeURIComponent(title)}${yearParam}&language=en-US&page=1&include_adult=false`;
+    debug(`[TMDB] search: "${title}" ${year || ''}`);
+    const text = await fetchUrl(url, {});
+    const data = JSON.parse(text);
+    const movie = data.results?.[0];
+    if (!movie) { setTmdbCache(cacheKey, null); return null; }
+
+    // Fetch full details + credits for genres/runtime
+    let genres  = [];
+    let runtime = null;
+    let imdbId  = null;
+    try {
+      const det = JSON.parse(await fetchUrl(
+        `https://api.themoviedb.org/3/movie/${movie.id}?api_key=${key}&append_to_response=external_ids`,
+        {}
+      ));
+      genres  = (det.genres || []).map(g => g.name);
+      runtime = det.runtime || null;
+      imdbId  = det.external_ids?.imdb_id || det.imdb_id || null;
+    } catch { /* detail fetch failed — use search result only */ }
+
+    const meta = {
+      tmdbId    : movie.id,
+      imdbId,
+      poster    : movie.poster_path   ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`   : null,
+      backdrop  : movie.backdrop_path ? `https://image.tmdb.org/t/p/w1280${movie.backdrop_path}` : null,
+      overview  : movie.overview      || null,
+      rating    : movie.vote_average  || null,
+      genres    : genres.length ? genres : (movie.genre_ids || []).map(String),
+      releaseDate: movie.release_date || null,
+      runtime,
+    };
+    setTmdbCache(cacheKey, meta);
+    log(`[TMDB] ✅ "${title}" → id=${movie.id} rating=${meta.rating} genres=${meta.genres.join(',')}`);
+    return meta;
+  } catch(e) {
+    err(`[TMDB] fetch failed for "${title}": ${e.message}`);
+    setTmdbCache(cacheKey, null);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ██  MOVIE HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Quality rank — higher = better
 const Q_RANK = { '4K':5,'2160p':5,'UHD':5,'1080p':4,'FHD':4,'720p':3,'HD':3,'480p':2,'360p':1,'SD':1,'':0 };
 
 function normalizeMovieTitle(title) {
   return (title || '').toLowerCase()
     .replace(/\b(4k|uhd|fhd|hd|sd|1080p|720p|480p|2160p|bluray|blu-ray|webrip|web-dl|dvdrip|hdcam|cam|ts|scr|extended|directors|cut|remastered)\b/gi, '')
-    .replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function getMovieGenres(streams) {
-  const genres = new Set();
-  streams.forEach(s => {
-    if (s.genres) s.genres.forEach(g => genres.add(g));
-    if (s.group && s.group !== 'Movies') genres.add(s.group);
-  });
-  return [...genres];
-}
-
-// Group movies by normalized title+year, combine quality variants
+// Group movies by normalized title+year, combining quality variants
 function groupMovies(streams) {
   const map = new Map();
   for (const s of streams) {
@@ -224,28 +291,33 @@ function groupMovies(streams) {
       map.set(key, {
         key, title: s.title, year: s.year,
         tmdbId: s.tmdbId, imdbId: s.imdbId,
-        poster: s.poster || s.logo, backdrop: s.backdrop,
-        overview: s.overview, rating: s.rating,
-        genres: s.genres || [], releaseDate: s.releaseDate,
-        runtime: s.runtime, streams: [],
+        poster: s.poster || s.logo,
+        backdrop: s.backdrop,
+        overview: s.overview,
+        rating: s.rating,
+        genres: s.genres || [],
+        releaseDate: s.releaseDate,
+        runtime: s.runtime,
+        streams: [],
       });
     }
     const g = map.get(key);
     g.streams.push(s);
     // Keep best metadata
-    if (!g.tmdbId && s.tmdbId)     g.tmdbId    = s.tmdbId;
-    if (!g.imdbId && s.imdbId)     g.imdbId    = s.imdbId;
-    if (!g.poster && (s.poster || s.logo)) g.poster = s.poster || s.logo;
-    if (!g.backdrop && s.backdrop) g.backdrop  = s.backdrop;
-    if (!g.overview && s.overview) g.overview  = s.overview;
-    if (!g.rating && s.rating)     g.rating    = s.rating;
-    if (!g.genres?.length && s.genres?.length) g.genres = s.genres;
+    if (!g.tmdbId   && s.tmdbId)               g.tmdbId    = s.tmdbId;
+    if (!g.imdbId   && s.imdbId)               g.imdbId    = s.imdbId;
+    if (!g.poster   && (s.poster || s.logo))   g.poster    = s.poster || s.logo;
+    if (!g.backdrop && s.backdrop)             g.backdrop  = s.backdrop;
+    if (!g.overview && s.overview)             g.overview  = s.overview;
+    if (!g.rating   && s.rating)               g.rating    = s.rating;
+    if ((!g.genres || !g.genres.length) && s.genres?.length) g.genres = s.genres;
+    // prefer shorter cleaner title
     if ((s.title || '').length < (g.title || '').length) g.title = s.title;
   }
-  return [...map.values()].sort((a, b) => a.title.localeCompare(b.title));
+  return [...map.values()].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
 }
 
-function removeDupMovies(streams) {
+function removeDupMovieStreams(streams) {
   const seen = new Map();
   for (const s of streams) {
     const key = normalizeMovieTitle(s.title) + '_' + (s.year || '') + '_' + (s.url || '');
@@ -259,19 +331,19 @@ function removeDupMovies(streams) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildIptvManifest() {
-  const settings  = getIptvSettings();
-  const streams   = getEnabledStreams();
-  const groups    = getIptvGroups();
-  const autoComb  = buildAutoCombined(streams);
-  const version   = getVersion(CFG_FILE);
-  const catalogs  = [];
+  const settings = getIptvSettings();
+  const streams  = getEnabledStreams();
+  const groups   = getIptvGroups();
+  const autoComb = buildAutoCombined(streams);
+  const version  = getVersion(CFG_FILE);
+  const catalogs = [];
 
   if (autoComb.length > 0) {
     catalogs.push({
       type: 'tv', id: 'jash_best', name: '⭐ Best Streams',
       extra: [
         { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: [...new Set(autoComb.map(c => c.streams[0]?.group).filter(Boolean))].slice(0,20) },
+        { name: 'genre',  isRequired: false, options: [...new Set(autoComb.map(c => c.streams[0]?.group).filter(Boolean))].slice(0, 20) },
       ],
     });
   }
@@ -286,10 +358,7 @@ function buildIptvManifest() {
   if (catalogs.length === 0) {
     catalogs.push({
       type: 'tv', id: 'jash_cat_default', name: `${settings.addonName} Channels`,
-      extra: [
-        { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: ['Entertainment','Sports','News','Movies'] },
-      ],
+      extra: [{ name: 'search', isRequired: false }],
     });
   }
 
@@ -318,42 +387,36 @@ function buildIptvManifest() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  MOVIE MANIFEST
+// ██  MOVIE MANIFEST  (no 4K/UHD category — only All Movies, HD, Top Rated, By Year)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildMovieManifest() {
   const settings = getMovieSettings();
   const streams  = getEnabledMovies();
-  const groups   = groupMovies(streams);
+  const movies   = groupMovies(streams);
   const version  = getVersion(MOV_FILE);
 
-  // Collect all unique genres
   const allGenres = [...new Set(streams.flatMap(s => s.genres || []).filter(Boolean))].sort().slice(0, 30);
-  // Collect all unique years
-  const allYears  = [...new Set(streams.map(s => s.year).filter(Boolean))].sort((a, b) => b - a).slice(0, 30);
+  const allYears  = [...new Set(streams.map(s => s.year).filter(y => y && y > 1900))].sort((a, b) => b - a).slice(0, 30);
+
+  const defaultGenres = ['Action','Drama','Comedy','Thriller','Horror','Sci-Fi','Romance','Animation','Documentary'];
+  const genreOptions  = allGenres.length ? allGenres : defaultGenres;
+  const yearOptions   = allYears.length  ? allYears.map(String) : [];
 
   const catalogs = [
     {
-      type: 'movie', id: 'jmov_all', name: `${settings.addonName}`,
+      type: 'movie', id: 'jmov_all', name: settings.addonName,
       extra: [
         { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: allGenres.length ? allGenres : ['Action','Drama','Comedy','Thriller','Horror','Sci-Fi','Romance','Animation','Documentary'] },
+        { name: 'genre',  isRequired: false, options: genreOptions },
         { name: 'skip',   isRequired: false },
       ],
     },
     {
-      type: 'movie', id: 'jmov_4k', name: '4K / Ultra HD',
+      type: 'movie', id: 'jmov_hd', name: '🎬 HD Movies',
       extra: [
         { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: allGenres.length ? allGenres : ['Action','Drama'] },
-        { name: 'skip',   isRequired: false },
-      ],
-    },
-    {
-      type: 'movie', id: 'jmov_hd', name: '1080p HD',
-      extra: [
-        { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: allGenres.length ? allGenres : ['Action','Drama'] },
+        { name: 'genre',  isRequired: false, options: genreOptions },
         { name: 'skip',   isRequired: false },
       ],
     },
@@ -361,18 +424,17 @@ function buildMovieManifest() {
       type: 'movie', id: 'jmov_top', name: '⭐ Top Rated',
       extra: [
         { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: allGenres.length ? allGenres : ['Action','Drama'] },
+        { name: 'genre',  isRequired: false, options: genreOptions },
         { name: 'skip',   isRequired: false },
       ],
     },
   ];
 
-  // Add year-based catalogs for most common years
-  if (allYears.length > 0) {
+  if (yearOptions.length > 0) {
     catalogs.push({
       type: 'movie', id: 'jmov_year', name: '📅 By Year',
       extra: [
-        { name: 'genre',  isRequired: false, options: allYears.map(String) },
+        { name: 'genre',  isRequired: false, options: yearOptions },
         { name: 'search', isRequired: false },
         { name: 'skip',   isRequired: false },
       ],
@@ -385,9 +447,9 @@ function buildMovieManifest() {
     name       : settings.addonName || MOVIE_NAME,
     description: [
       settings.addonName || MOVIE_NAME,
-      groups.length  ? `${groups.length} movies` : 'Add movie sources in configurator',
+      movies.length  ? `${movies.length} movies`  : 'Add movie sources in configurator',
       streams.length ? `${streams.length} streams` : '',
-      'TMDB · 4K · 1080p · DRM',
+      'TMDB · HD · DRM',
     ].filter(Boolean).join(' · '),
     logo: `${PUBLIC_URL}/movie-logo.png`,
     resources: [
@@ -413,7 +475,7 @@ function handleIptvCatalog(catId, extra) {
   const settings = getIptvSettings();
   const search   = (extra.search || '').toLowerCase().trim();
   const genre    = (extra.genre  || '').trim();
-  const skip     = parseInt(extra.skip || '0', 10);
+  const skip     = parseInt(extra.skip || '0', 10) || 0;
   const PAGE     = 100;
 
   if (catId === 'jash_best') {
@@ -422,10 +484,12 @@ function handleIptvCatalog(catId, extra) {
     if (genre)  list = list.filter(c => c.streams.some(s => s.group === genre));
     const metas = list.slice(skip, skip + PAGE).map(c => {
       const logo = c.streams.find(s => s.logo)?.logo || null;
-      return { id: `jashauto${encodeId(c.key)}`, type: 'tv', name: c.name,
+      return {
+        id: `jashauto${encodeId(c.key)}`, type: 'tv', name: c.name,
         poster: logo, background: logo, logo,
         description: `${c.sourceCount} sources · ${c.streams.length} streams`,
-        genres: [...new Set(c.streams.map(s => s.group).filter(Boolean))] };
+        genres: [...new Set(c.streams.map(s => s.group).filter(Boolean))],
+      };
     });
     return { metas };
   }
@@ -442,7 +506,7 @@ function handleIptvCatalog(catId, extra) {
   if (genre)  list = list.filter(s => s.group === genre);
 
   const combined = settings.combineMultiQuality !== false;
-  const seen     = new Map();
+  const seen = new Map();
   for (const s of list) {
     const key = combined ? s.name.toLowerCase().trim() : s.id;
     if (!seen.has(key)) seen.set(key, { rep: s, all: [] });
@@ -464,28 +528,29 @@ function handleIptvCatalog(catId, extra) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function handleMovieCatalog(catId, extra) {
-  const streams  = getEnabledMovies();
-  const settings = getMovieSettings();
-  const search   = (extra.search || '').toLowerCase().trim();
-  const genre    = (extra.genre  || '').trim();
-  const skip     = parseInt(extra.skip  || '0', 10);
-  const PAGE     = 100;
+  const streams = getEnabledMovies();
+  const search  = (extra.search || '').toLowerCase().trim();
+  const genre   = (extra.genre  || '').trim();
+  const skip    = parseInt(extra.skip  || '0', 10) || 0;
+  const PAGE    = 100;
 
   let groups = groupMovies(streams);
 
   // ── Filter by catalog type ────────────────────────────────────────────────
-  if (catId === 'jmov_4k') {
-    groups = groups.filter(g => g.streams.some(s => s.quality === '4K' || s.quality === '2160p' || s.quality === 'UHD'));
-  } else if (catId === 'jmov_hd') {
-    groups = groups.filter(g => g.streams.some(s => s.quality === '1080p' || s.quality === 'FHD'));
+  if (catId === 'jmov_hd') {
+    // 720p, 1080p — exclude UHD/4K
+    groups = groups.filter(g => g.streams.some(s =>
+      s.quality === '1080p' || s.quality === 'FHD' || s.quality === '720p' || s.quality === 'HD'
+    ));
   } else if (catId === 'jmov_top') {
-    groups = groups.filter(g => g.rating >= 7.0).sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    groups = groups.filter(g => (g.rating || 0) >= 7.0)
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
   } else if (catId === 'jmov_year') {
-    // genre param = year for this catalog
+    // genre param is used as the year selector in Stremio
     if (genre) groups = groups.filter(g => String(g.year) === genre);
   }
 
-  // ── Genre filter ──────────────────────────────────────────────────────────
+  // ── Genre filter (not for year catalog) ──────────────────────────────────
   if (genre && catId !== 'jmov_year') {
     groups = groups.filter(g =>
       (g.genres || []).some(gn => gn.toLowerCase().includes(genre.toLowerCase())) ||
@@ -495,7 +560,7 @@ function handleMovieCatalog(catId, extra) {
 
   // ── Search ────────────────────────────────────────────────────────────────
   if (search) {
-    groups = groups.filter(g => g.title.toLowerCase().includes(search));
+    groups = groups.filter(g => (g.title || '').toLowerCase().includes(search));
   }
 
   const page  = groups.slice(skip, skip + PAGE);
@@ -503,7 +568,6 @@ function handleMovieCatalog(catId, extra) {
     const qualities = [...new Set(g.streams.map(s => s.quality).filter(Boolean))];
     const qualStr   = qualities.slice(0, 3).join(' · ');
     const movieId   = `jmov${encodeId(g.key)}`;
-
     return {
       id         : movieId,
       type       : 'movie',
@@ -524,41 +588,50 @@ function handleMovieCatalog(catId, extra) {
     };
   });
 
-  debug(`[MOVIE-CATALOG] ${catId} → ${metas.length}/${groups.length} (skip=${skip})`);
+  debug(`[MOVIE-CAT] ${catId} → ${metas.length}/${groups.length} (skip=${skip} search="${search}" genre="${genre}")`);
   return { metas };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  MOVIE META HANDLER
+// ██  MOVIE META HANDLER  (with on-demand TMDB fetch if missing)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function handleMovieMeta(rawId) {
+async function handleMovieMeta(rawId) {
   let id = rawId;
   try { id = decodeURIComponent(rawId); } catch { /* ok */ }
 
   const streams = getEnabledMovies();
   const groups  = groupMovies(streams);
   const key     = decodeId(id.replace(/^jmov/, ''));
-  const g       = groups.find(x => x.key === key);
+  let g         = groups.find(x => x.key === key);
   if (!g) return { meta: null };
+
+  // On-demand TMDB fetch if metadata missing
+  if (!g.tmdbId) {
+    const tmdbKey = getMovieSettings().tmdbApiKey;
+    if (tmdbKey) {
+      const meta = await fetchTmdbMeta(g.title, g.year, tmdbKey);
+      if (meta) Object.assign(g, meta);
+    }
+  }
 
   const qualities = [...new Set(g.streams.map(s => s.quality).filter(Boolean))];
   return {
     meta: {
       id, type: 'movie', name: g.title, year: g.year,
-      poster     : g.poster || null,
-      background : g.backdrop || g.poster || null,
-      logo       : g.poster || null,
+      poster     : g.poster    || null,
+      background : g.backdrop  || g.poster || null,
+      logo       : g.poster    || null,
       description: [
         g.overview,
         qualities.length ? `Available in: ${qualities.join(', ')}` : null,
         g.streams.length > 1 ? `${g.streams.length} stream sources` : null,
       ].filter(Boolean).join('\n\n') || null,
-      imdbRating : g.rating ? String(g.rating.toFixed(1)) : null,
-      genres     : g.genres || [],
-      releaseInfo: g.year ? String(g.year) : null,
+      imdbRating : g.rating  ? String(g.rating.toFixed(1)) : null,
+      genres     : g.genres  || [],
+      releaseInfo: g.year    ? String(g.year) : null,
       runtime    : g.runtime ? `${g.runtime} min` : null,
-      imdbId     : g.imdbId || null,
+      imdbId     : g.imdbId  || null,
     },
   };
 }
@@ -579,12 +652,8 @@ async function handleMovieStream(rawId) {
 
   log(`[MOVIE-STREAM] "${g.title}" → ${g.streams.length} variant(s)`);
 
-  // Sort streams by quality (best first)
-  const sorted = [...g.streams].sort((a, b) => {
-    const qa = Q_RANK[a.quality || ''] || 0;
-    const qb = Q_RANK[b.quality || ''] || 0;
-    return qb - qa;
-  });
+  // Sort by quality (best first)
+  const sorted = [...g.streams].sort((a, b) => (Q_RANK[b.quality || ''] || 0) - (Q_RANK[a.quality || ''] || 0));
 
   const results = [];
   for (let i = 0; i < sorted.length; i++) {
@@ -603,24 +672,20 @@ async function handleMovieStream(rawId) {
           if (extracted && extracted !== s.url) { setCache(s.url, extracted); resolved = extracted; }
         }
       }
-    } catch(e) { err(`[MOVIE-STREAM] extract error: ${e.message}`); }
+    } catch(e) { err(`[MOVIE-STREAM] extract: ${e.message}`); }
 
     const headers = buildHeaders(s);
     let title = `🎬 ${qual}`;
-    if (isDRM)        title += ` [🔐 ${(s.licenseType || 'DRM').toUpperCase()}]`;
+    if (isDRM)           title += ` [🔐 ${(s.licenseType || 'DRM').toUpperCase()}]`;
     if (type === 'dash') title += ' [DASH]';
 
     const entry = {
-      url  : resolved,
-      name : g.title,
-      title,
+      url: resolved, name: g.title, title,
       behaviorHints: { notWebReady: true, proxyHeaders: { request: headers } },
     };
-
     if (isDRM && s.licenseKey) {
-      entry.description = `DRM:${s.licenseType} | Key:${s.licenseKey.substring(0,40)}`;
+      entry.description = `DRM:${s.licenseType} | Key:${s.licenseKey.substring(0, 40)}`;
     }
-
     results.push(entry);
   }
 
@@ -644,19 +709,25 @@ function handleIptvMeta(rawId) {
     const c    = auto.find(x => x.key === key);
     if (!c) return { meta: null };
     const logo = c.streams.find(s => s.logo)?.logo || null;
-    return { meta: { id, type: 'tv', name: c.name, poster: logo, logo,
+    return { meta: {
+      id, type: 'tv', name: c.name, poster: logo, logo,
       description: `${c.sourceCount} sources · ${c.streams.length} streams · ${name}`,
-      genres: [...new Set(c.streams.map(s => s.group).filter(Boolean))], releaseInfo: 'LIVE' }};
+      genres: [...new Set(c.streams.map(s => s.group).filter(Boolean))],
+      releaseInfo: 'LIVE',
+    }};
   }
 
   const url = decodeId(id.replace(/^jash/, ''));
   if (!url) return { meta: null };
   const s = streams.find(x => x.url === url);
   if (!s) return { meta: null };
-  return { meta: { id, type: 'tv', name: s.name,
+  return { meta: {
+    id, type: 'tv', name: s.name,
     poster: s.logo || null, background: s.logo || null, logo: s.logo || null,
     description: `${s.group || 'Uncategorized'} · ${name}`,
-    genres: [s.group || 'Uncategorized'], releaseInfo: 'LIVE' }};
+    genres: [s.group || 'Uncategorized'],
+    releaseInfo: 'LIVE',
+  }};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -669,7 +740,7 @@ async function handleIptvStream(rawId) {
   const streams  = getEnabledStreams();
   const settings = getIptvSettings();
   const name     = settings.addonName || IPTV_NAME;
-  debug(`[IPTV-STREAM] id=${id.slice(0,80)}`);
+  debug(`[IPTV-STREAM] id=${id.slice(0, 80)}`);
 
   if (id.startsWith('jashauto')) {
     const key  = decodeId(id.replace('jashauto', ''));
@@ -702,7 +773,9 @@ async function resolveIptvVariants(variants, addonName, settings) {
     const s     = variants[i];
     const type  = detectType(s);
     const isDRM = hasDRM(s);
-    const label = variants.length > 1 ? `[${i+1}/${variants.length}] ${s.name || 'Stream'}` : (s.name || 'Live');
+    const label = variants.length > 1
+      ? `[${i + 1}/${variants.length}] ${s.name || 'Stream'}`
+      : (s.name || 'Live');
     let resolved = s.url;
 
     try {
@@ -714,18 +787,18 @@ async function resolveIptvVariants(variants, addonName, settings) {
           if (extracted && extracted !== s.url) { setCache(s.url, extracted); resolved = extracted; }
         }
       }
-    } catch(e) { err(`[RESOLVE] error: ${e.message}`); }
+    } catch(e) { err(`[RESOLVE] ${e.message}`); }
 
     const headers = buildHeaders(s);
     let title = `🔴 ${label}`;
-    if (isDRM)        title += ` [🔐 ${(s.licenseType || 'DRM').toUpperCase()}]`;
+    if (isDRM)           title += ` [🔐 ${(s.licenseType || 'DRM').toUpperCase()}]`;
     if (type === 'dash') title += ` [DASH]`;
 
     const entry = {
       url: resolved, name: addonName, title,
       behaviorHints: { notWebReady: true, proxyHeaders: { request: headers } },
     };
-    if (isDRM && s.licenseKey) entry.description = `DRM:${s.licenseType} | Key:${s.licenseKey.substring(0,40)}`;
+    if (isDRM && s.licenseKey) entry.description = `DRM:${s.licenseType} | Key:${s.licenseKey.substring(0, 40)}`;
     results.push(entry);
   }
   return { streams: results };
@@ -736,27 +809,31 @@ function buildHeaders(s) {
     'User-Agent': s.userAgent ||
       'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36',
   };
-  if (s.cookie)  h['Cookie']  = s.cookie;
-  if (s.referer) h['Referer'] = s.referer;
+  if (s.cookie)      h['Cookie']  = s.cookie;
+  if (s.referer)     h['Referer'] = s.referer;
   if (s.httpHeaders) Object.entries(s.httpHeaders).forEach(([k, v]) => { if (!h[k]) h[k] = v; });
   return h;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  HLS EXTRACTION — Samsung Tizen fix
+// ██  HLS EXTRACTION — Samsung Tizen fix (exact algorithm)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function extractHLS(playlistUrl, streamMeta) {
-  log(`[HLS] Fetching: ${playlistUrl.slice(0,70)}…`);
+  log(`[HLS] Fetching: ${playlistUrl.slice(0, 70)}…`);
   const customHeaders = {};
   if (streamMeta?.userAgent)   customHeaders['User-Agent'] = streamMeta.userAgent;
   if (streamMeta?.cookie)      customHeaders['Cookie']     = streamMeta.cookie;
   if (streamMeta?.referer)     customHeaders['Referer']    = streamMeta.referer;
   if (streamMeta?.httpHeaders) Object.assign(customHeaders, streamMeta.httpHeaders);
+
   let content;
   try { content = await fetchUrl(playlistUrl, customHeaders); }
   catch(e) { log(`[HLS] fetch failed: ${e.message}`); return null; }
-  if (!content.includes('#EXTM3U') && !content.includes('#EXT-X-')) { debug('[HLS] not M3U8'); return null; }
+
+  if (!content.includes('#EXTM3U') && !content.includes('#EXT-X-')) {
+    debug('[HLS] not M3U8'); return null;
+  }
   return extractRealStreamUrl(content, playlistUrl);
 }
 
@@ -764,11 +841,12 @@ function extractRealStreamUrl(content, baseUrl) {
   try {
     const lines    = content.split('\n').map(l => l.trim()).filter(Boolean);
     const isMaster = lines.some(l => l.includes('#EXT-X-STREAM-INF'));
+
     if (isMaster) {
       const variants = [];
       for (let i = 0; i < lines.length; i++) {
         if (!lines[i].includes('#EXT-X-STREAM-INF')) continue;
-        const bw  = (lines[i].match(/BANDWIDTH=(\d+)/)  || [])[1];
+        const bw  = (lines[i].match(/BANDWIDTH=(\d+)/)   || [])[1];
         const res = (lines[i].match(/RESOLUTION=(\d+x\d+)/) || [])[1];
         for (let j = i + 1; j < lines.length; j++) {
           if (!lines[j].startsWith('#')) {
@@ -779,6 +857,7 @@ function extractRealStreamUrl(content, baseUrl) {
       }
       if (!variants.length) return null;
       variants.sort((a, b) => b.bw - a.bw);
+      // Pick middle quality for Samsung TV stability
       const idx      = Math.floor(variants.length / 2);
       const selected = variants[idx];
       debug(`[EXTRACT] ${variants.length} variants → [${idx}] ${selected.res} @${selected.bw}bps`);
@@ -786,6 +865,7 @@ function extractRealStreamUrl(content, baseUrl) {
       if (!vUrl.startsWith('http')) vUrl = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1) + vUrl;
       return vUrl;
     } else {
+      // Media playlist — find first segment
       for (const line of lines) {
         if (line.startsWith('#')) continue;
         if (line.includes('.ts') || line.includes('.m4s') || line.includes('.m3u8') || line.includes('.mp4')) {
@@ -800,11 +880,11 @@ function extractRealStreamUrl(content, baseUrl) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  HTTP FETCH
+// ██  HTTP FETCH (with redirect support)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function fetchUrl(url, customHeaders, redirects) {
-  redirects = redirects || 0;
+  redirects     = redirects || 0;
   customHeaders = customHeaders || {};
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('Too many redirects'));
@@ -813,9 +893,9 @@ function fetchUrl(url, customHeaders, redirects) {
     const lib   = parsed.protocol === 'https:' ? https : http;
     const timer = setTimeout(() => reject(new Error('Timeout')), REQ_TIMEOUT);
     const reqHeaders = {
-      'User-Agent'  : customHeaders['User-Agent'] ||
+      'User-Agent': customHeaders['User-Agent'] ||
         'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36',
-      'Accept'      : '*/*',
+      'Accept'       : '*/*',
       'Cache-Control': 'no-cache',
       ...customHeaders,
     };
@@ -844,7 +924,7 @@ function fetchUrl(url, customHeaders, redirects) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  M3U PLAYLIST GENERATOR (IPTV)
+// ██  M3U PLAYLIST GENERATOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function generateM3U(streams, playlistName) {
@@ -852,9 +932,9 @@ function generateM3U(streams, playlistName) {
   for (const s of streams) {
     const parts = ['#EXTINF:-1'];
     if (s.tvgId) parts.push(`tvg-id="${s.tvgId}"`);
-    parts.push(`tvg-name="${(s.tvgName || s.name || '').replace(/"/g,'')}"`);
+    parts.push(`tvg-name="${(s.tvgName || s.name || '').replace(/"/g, '')}"`);
     if (s.logo) parts.push(`tvg-logo="${s.logo}"`);
-    parts.push(`group-title="${(s.group || 'Uncategorized').replace(/"/g,'')}"`);
+    parts.push(`group-title="${(s.group || 'Uncategorized').replace(/"/g, '')}"`);
     lines.push(`${parts.join(' ')},${s.name}`);
     if (s.licenseType && s.licenseKey) {
       lines.push(`#KODIPROP:inputstream.adaptive.license_type=${s.licenseType}`);
@@ -896,13 +976,24 @@ function json(res, data, code) {
 function serveFile(res, filePath) {
   if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('404'); }
   const mime = {
-    '.html':'text/html; charset=utf-8','.js':'application/javascript',
-    '.css':'text/css','.json':'application/json','.png':'image/png',
-    '.jpg':'image/jpeg','.svg':'image/svg+xml','.ico':'image/x-icon',
-    '.woff':'font/woff','.woff2':'font/woff2','.webp':'image/webp','.txt':'text/plain',
+    '.html': 'text/html; charset=utf-8',
+    '.js'  : 'application/javascript',
+    '.css' : 'text/css',
+    '.json': 'application/json',
+    '.png' : 'image/png',
+    '.jpg' : 'image/jpeg',
+    '.svg' : 'image/svg+xml',
+    '.ico' : 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.webp': 'image/webp',
+    '.txt' : 'text/plain',
   }[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
   const content = fs.readFileSync(filePath);
-  res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': mime.includes('html') ? 'no-cache' : 'public, max-age=3600' });
+  res.writeHead(200, {
+    'Content-Type'  : mime,
+    'Cache-Control' : mime.includes('html') ? 'no-cache' : 'public, max-age=3600',
+  });
   res.end(content);
 }
 function parseExtra(str) {
@@ -926,6 +1017,7 @@ function installPage() {
   const iptvS  = getEnabledStreams().length;
   const movieS = groupMovies(getEnabledMovies()).length;
   const host   = PUBLIC_URL.replace(/^https?:\/\//, '');
+  const hasTmdb = !!TMDB_KEY;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -935,13 +1027,13 @@ function installPage() {
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:#0f172a;color:#e2e8f0;font-family:'Segoe UI',Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
-    .wrap{max-width:700px;width:100%;space-y:1.5rem}
+    .wrap{max-width:720px;width:100%}
     .card{background:#1e293b;border:1px solid #334155;border-radius:1.5rem;padding:2rem;margin-bottom:1.5rem;box-shadow:0 25px 50px rgba(0,0,0,.5)}
     h1{color:#a78bfa;font-size:2rem;font-weight:800;text-align:center;margin-bottom:.25rem}
     .sub{color:#64748b;text-align:center;font-size:.9rem;margin-bottom:1.5rem}
     .row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
     .addon-card{background:#0f172a;border-radius:1rem;padding:1.5rem;border:1px solid #334155}
-    .addon-card h2{font-size:1rem;font-weight:700;margin-bottom:.5rem}
+    .addon-card h2{font-size:1rem;font-weight:700;margin-bottom:.75rem}
     .iptv-card{border-color:#4f46e522} .iptv-card h2{color:#818cf8}
     .movie-card{border-color:#d9770622} .movie-card h2{color:#fb923c}
     .url-box{background:#0f172a;border:1px solid #1e293b;border-radius:.5rem;padding:.75rem;font-family:monospace;font-size:.75rem;word-break:break-all;margin-bottom:.75rem}
@@ -958,7 +1050,12 @@ function installPage() {
     .step{display:flex;gap:.75rem;margin-bottom:.75rem;align-items:flex-start}
     .step-n{background:#7c3aed22;border:1px solid #7c3aed55;color:#a78bfa;width:1.75rem;height:1.75rem;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;flex-shrink:0}
     .step-t{color:#94a3b8;font-size:.85rem;padding-top:.2rem} .step-t strong{color:#e2e8f0}
+    .env-box{background:#0f172a;border:1px solid #334155;border-radius:.75rem;padding:1rem;margin-top:.75rem;font-size:.8rem}
+    .env-box code{background:#1e293b;padding:.15rem .4rem;border-radius:.3rem;font-family:monospace;color:#a78bfa}
     footer{text-align:center;color:#475569;font-size:.75rem;padding-top:1rem}
+    .badge{display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .6rem;border-radius:9999px;font-size:.7rem;font-weight:700}
+    .badge-green{background:#14532d;color:#4ade80}
+    .badge-orange{background:#7c2d12;color:#fb923c}
     @media(max-width:560px){.row{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
   </style>
 </head>
@@ -967,7 +1064,7 @@ function installPage() {
   <div class="card">
     <div style="font-size:3.5rem;text-align:center;margin-bottom:.75rem">📡</div>
     <h1>Jash Addon</h1>
-    <p class="sub">Two Stremio Addons · IPTV + Movies · HLS/DASH/DRM · Samsung Tizen</p>
+    <p class="sub">IPTV + Movies · HLS/DASH/DRM · Samsung Tizen · TMDB ${hasTmdb ? '<span class="badge badge-green">✓ TMDB Key Set</span>' : '<span class="badge badge-orange">⚠ Set TMDB_API_KEY env var</span>'}</p>
 
     <div class="stats">
       <div class="stat"><div class="val">${iptvS.toLocaleString()}</div><div class="lbl">IPTV Channels</div></div>
@@ -983,8 +1080,8 @@ function installPage() {
           <span class="lbl">Manifest URL</span>
           <span class="val">${PUBLIC_URL}/manifest.json</span>
         </div>
-        <a href="stremio://${host}/manifest.json" class="btn btn-iptv">🎬 Install IPTV Addon</a>
-        <a href="https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/manifest.json`)}" class="btn-sm" target="_blank">🌐 Web Install</a>
+        <a href="stremio://${host}/manifest.json" class="btn btn-iptv">📺 Install IPTV in Stremio</a>
+        <a href="https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/manifest.json`)}" class="btn-sm" target="_blank">🌐 Web</a>
         <a href="/manifest.json" class="btn-sm" target="_blank">📋 Manifest</a>
       </div>
 
@@ -994,8 +1091,8 @@ function installPage() {
           <span class="lbl">Manifest URL</span>
           <span class="val">${PUBLIC_URL}/movie/manifest.json</span>
         </div>
-        <a href="stremio://${host}/movie/manifest.json" class="btn btn-movie">🎬 Install Movie Addon</a>
-        <a href="https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/movie/manifest.json`)}" class="btn-sm" target="_blank">🌐 Web Install</a>
+        <a href="stremio://${host}/movie/manifest.json" class="btn btn-movie">🎬 Install Movies in Stremio</a>
+        <a href="https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/movie/manifest.json`)}" class="btn-sm" target="_blank">🌐 Web</a>
         <a href="/movie/manifest.json" class="btn-sm" target="_blank">📋 Manifest</a>
       </div>
     </div>
@@ -1003,25 +1100,33 @@ function installPage() {
     <div style="margin-bottom:1rem">
       <div style="color:#94a3b8;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.75rem">📻 M3U Playlists (Tivimate · OTT Navigator · VLC)</div>
       <div class="url-box">
-        <span class="lbl">IPTV Playlist (all channels)</span>
+        <span class="lbl">Short URL (easiest to type)</span>
         <span class="val">${PUBLIC_URL}/p.m3u</span>
       </div>
     </div>
 
-    <div style="margin-bottom:1rem">
+    ${!hasTmdb ? `<div class="env-box">
+      <strong style="color:#fb923c">⚠ TMDB API Key not set</strong><br>
+      <span style="color:#94a3b8">To enable movie posters, ratings and genres, set the environment variable:</span><br><br>
+      <code>TMDB_API_KEY=your_key_here</code><br><br>
+      <span style="color:#64748b">Get a free key at <a href="https://www.themoviedb.org/settings/api" style="color:#a78bfa">themoviedb.org/settings/api</a></span>
+    </div>` : ''}
+
+    <div style="margin-bottom:1rem;margin-top:1rem">
       <div style="color:#94a3b8;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.75rem">🚀 How to Use</div>
-      <div class="step"><div class="step-n">1</div><div class="step-t"><strong>Install both addons</strong> — click the install buttons above</div></div>
+      <div class="step"><div class="step-n">1</div><div class="step-t"><strong>Install both addons</strong> — click the buttons above in Stremio</div></div>
       <div class="step"><div class="step-n">2</div><div class="step-t"><strong>Open Configurator</strong> — add M3U/JSON sources, manage streams, groups, selection models</div></div>
-      <div class="step"><div class="step-n">3</div><div class="step-t"><strong>Sync to Backend</strong> — click "Sync to Backend" in the Backend tab — changes appear in Stremio instantly</div></div>
-      <div class="step"><div class="step-n">4</div><div class="step-t"><strong>No reinstall needed</strong> — sync updates the addon without reinstalling</div></div>
+      <div class="step"><div class="step-n">3</div><div class="step-t"><strong>Sync to Backend</strong> — click "Sync to Backend" in the Backend tab — changes appear in Stremio without reinstalling</div></div>
+      <div class="step"><div class="step-n">4</div><div class="step-t"><strong>Movie metadata</strong> — set <code>TMDB_API_KEY</code> env var for automatic poster/rating/genre fetching</div></div>
     </div>
 
     <div style="display:flex;flex-wrap:wrap;gap:.5rem">
-      <a href="/" class="btn-sm">⚙️ Open Configurator</a>
+      <a href="/" class="btn-sm">⚙️ Configurator</a>
       <a href="/health" class="btn-sm">❤️ Health</a>
       <a href="/manifest.json" class="btn-sm">📋 IPTV Manifest</a>
       <a href="/movie/manifest.json" class="btn-sm">🎬 Movie Manifest</a>
       <a href="/p.m3u" class="btn-sm">📻 M3U Playlist</a>
+      <a href="/install" class="btn-sm">📦 Install Page</a>
     </div>
   </div>
   <footer>Jash Addon v${iptvM.version} · ${IPTV_ID} · ${MOVIE_ID}</footer>
@@ -1046,15 +1151,16 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/health' || pathname === '/api/health') {
     noCache(res);
     const iptvStreams  = getEnabledStreams();
-    const iptvGroups  = getIptvGroups();
-    const movieStream = getEnabledMovies();
-    const movieGroups = groupMovies(movieStream);
-    const autoComb    = buildAutoCombined(iptvStreams);
-    const iptvM       = buildIptvManifest();
-    const movieM      = buildMovieManifest();
+    const iptvGroups   = getIptvGroups();
+    const movieStreams = getEnabledMovies();
+    const movieGroups  = groupMovies(movieStreams);
+    const autoComb     = buildAutoCombined(iptvStreams);
+    const iptvM        = buildIptvManifest();
+    const movieM       = buildMovieManifest();
     return json(res, {
       status: 'ok', uptime: Math.round(process.uptime()),
       publicUrl: PUBLIC_URL,
+      tmdbConfigured: !!TMDB_KEY,
       iptv: {
         streams: iptvStreams.length, groups: iptvGroups.length,
         autoCombined: autoComb.length, catalogs: iptvM.catalogs.length,
@@ -1069,17 +1175,12 @@ const server = http.createServer(async (req, res) => {
         },
       },
       movies: {
-        streams: movieStream.length, uniqueMovies: movieGroups.length,
+        streams: movieStreams.length, uniqueMovies: movieGroups.length,
         catalogs: movieM.catalogs.length, version: movieM.version,
         manifestUrl: `${PUBLIC_URL}/movie/manifest.json`,
         installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/movie/manifest.json`,
-        qualities: {
-          '4K'   : movieStream.filter(s => s.quality === '4K' || s.quality === '2160p').length,
-          '1080p': movieStream.filter(s => s.quality === '1080p').length,
-          '720p' : movieStream.filter(s => s.quality === '720p').length,
-        },
       },
-      cache: streamCache.size,
+      cache: { streams: streamCache.size, tmdb: tmdbCache.size },
     });
   }
 
@@ -1097,10 +1198,12 @@ const server = http.createServer(async (req, res) => {
         const autoComb = buildAutoCombined(enabled);
         const manifest = buildIptvManifest();
         log(`[SYNC-IPTV] ✅ ${enabled.length} streams | v${manifest.version} | ${autoComb.length} auto-combined`);
-        return json(res, { ok: true, streams: enabled.length, autoCombined: autoComb.length,
+        return json(res, {
+          ok: true, streams: enabled.length, autoCombined: autoComb.length,
           version: manifest.version,
           manifestUrl: `${PUBLIC_URL}/manifest.json`,
-          installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/manifest.json` });
+          installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/manifest.json`,
+        });
       } catch(e) { err('[SYNC-IPTV]', e.message); return json(res, { ok: false, error: e.message }, 400); }
     });
     return;
@@ -1110,32 +1213,74 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/movie-sync' && req.method === 'POST') {
     let body = '';
     req.on('data', c => { body += c; });
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const cfg = JSON.parse(body);
         if (!Array.isArray(cfg.streams)) return json(res, { ok: false, error: 'streams must be array' }, 400);
+
+        // Use TMDB_API_KEY env var (override stored key)
+        if (cfg.settings && TMDB_KEY) cfg.settings.tmdbApiKey = TMDB_KEY;
+
         fs.writeFileSync(MOV_FILE, JSON.stringify(cfg, null, 2), 'utf8');
         streamCache.clear();
         const enabled  = cfg.streams.filter(s => s.enabled !== false);
         const movies   = groupMovies(enabled);
         const manifest = buildMovieManifest();
-        log(`[SYNC-MOVIE] ✅ ${enabled.length} streams | ${movies.length} unique movies | v${manifest.version}`);
-        return json(res, { ok: true, streams: enabled.length, uniqueMovies: movies.length,
+        const tmdbKey  = TMDB_KEY || cfg.settings?.tmdbApiKey || '';
+
+        log(`[SYNC-MOVIE] ✅ ${enabled.length} streams | ${movies.length} unique movies | v${manifest.version} | TMDB: ${tmdbKey ? 'yes' : 'no'}`);
+
+        // Background: enrich movies without metadata (non-blocking)
+        if (tmdbKey) {
+          const toEnrich = movies.filter(m => !m.tmdbId).slice(0, 50);
+          if (toEnrich.length > 0) {
+            log(`[TMDB] Starting background enrichment for ${toEnrich.length} movies…`);
+            (async () => {
+              let enriched = 0;
+              for (const m of toEnrich) {
+                try {
+                  const meta = await fetchTmdbMeta(m.title, m.year, tmdbKey);
+                  if (meta) {
+                    // Update all stream entries for this movie
+                    const updatedStreams = cfg.streams.map(s => {
+                      const sk = normalizeMovieTitle(s.title) + '_' + (s.year || '');
+                      if (sk === m.key) return { ...s, ...meta };
+                      return s;
+                    });
+                    cfg.streams = updatedStreams;
+                    enriched++;
+                  }
+                  await new Promise(r => setTimeout(r, 250)); // rate limit
+                } catch { /* ignore */ }
+              }
+              if (enriched > 0) {
+                fs.writeFileSync(MOV_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+                log(`[TMDB] ✅ Enriched ${enriched} movies`);
+              }
+            })().catch(e => err('[TMDB] background enrichment error:', e.message));
+          }
+        }
+
+        return json(res, {
+          ok: true, streams: enabled.length, uniqueMovies: movies.length,
           version: manifest.version,
+          tmdbConfigured: !!tmdbKey,
           manifestUrl: `${PUBLIC_URL}/movie/manifest.json`,
-          installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/movie/manifest.json` });
+          installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/movie/manifest.json`,
+        });
       } catch(e) { err('[SYNC-MOVIE]', e.message); return json(res, { ok: false, error: e.message }, 400); }
     });
     return;
   }
 
   // ── /api/config ───────────────────────────────────────────────────────────
-  if (pathname === '/api/config') { noCache(res); return json(res, loadIptvConfig()); }
+  if (pathname === '/api/config')       { noCache(res); return json(res, loadIptvConfig()); }
   if (pathname === '/api/movie-config') { noCache(res); return json(res, loadMovieConfig()); }
 
   // ── /api/cache (DELETE) ───────────────────────────────────────────────────
   if (pathname === '/api/cache' && req.method === 'DELETE') {
-    const n = streamCache.size; streamCache.clear();
+    const n = streamCache.size + tmdbCache.size;
+    streamCache.clear(); tmdbCache.clear();
     log(`[CACHE] Cleared ${n} entries`);
     return json(res, { ok: true, cleared: n });
   }
@@ -1161,9 +1306,10 @@ const server = http.createServer(async (req, res) => {
         version      : movieM.version,
         movies       : groupMovies(getEnabledMovies()).length,
       },
-      configureUrl: `${PUBLIC_URL}/`,
-      playlistUrl : `${PUBLIC_URL}/playlist.m3u`,
-      shortUrls   : { m3u: `${PUBLIC_URL}/p.m3u`, iptv: `${PUBLIC_URL}/iptv.m3u` },
+      configureUrl   : `${PUBLIC_URL}/`,
+      playlistUrl    : `${PUBLIC_URL}/playlist.m3u`,
+      shortUrls      : { m3u: `${PUBLIC_URL}/p.m3u`, iptv: `${PUBLIC_URL}/iptv.m3u` },
+      tmdbConfigured : !!TMDB_KEY,
     });
   }
 
@@ -1175,16 +1321,25 @@ const server = http.createServer(async (req, res) => {
     return json(res, {
       total: streams.length, groups: groups.length,
       playlistUrl: `${PUBLIC_URL}/playlist.m3u`,
-      shortUrls: { all: `${PUBLIC_URL}/playlist.m3u`, short: `${PUBLIC_URL}/p.m3u`, iptv: `${PUBLIC_URL}/iptv.m3u`, live: `${PUBLIC_URL}/live.m3u`, channels: `${PUBLIC_URL}/channels.m3u` },
-      groupUrls: groups.map(g => ({ group: g.name, url: `${PUBLIC_URL}/playlist/${encodeURIComponent(g.name)}.m3u`, count: streams.filter(s => (s.group || 'Uncategorized') === g.name).length })),
+      shortUrls  : {
+        all     : `${PUBLIC_URL}/playlist.m3u`,
+        short   : `${PUBLIC_URL}/p.m3u`,
+        iptv    : `${PUBLIC_URL}/iptv.m3u`,
+        live    : `${PUBLIC_URL}/live.m3u`,
+        channels: `${PUBLIC_URL}/channels.m3u`,
+      },
+      groupUrls: groups.map(g => ({
+        group: g.name,
+        url  : `${PUBLIC_URL}/playlist/${encodeURIComponent(g.name)}.m3u`,
+        count: streams.filter(s => (s.group || 'Uncategorized') === g.name).length,
+      })),
     });
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // ██  IPTV ADDON ROUTES  (/manifest.json, /catalog/tv/*, /meta/tv/*, /stream/tv/*)
+  // ██  IPTV ADDON ROUTES
   // ══════════════════════════════════════════════════════════════════════════
 
-  // ── /manifest.json ────────────────────────────────────────────────────────
   if (pathname === '/manifest.json') {
     noCache(res);
     const m = buildIptvManifest();
@@ -1192,13 +1347,14 @@ const server = http.createServer(async (req, res) => {
     return json(res, m);
   }
 
-  // ── IPTV catalog ──────────────────────────────────────────────────────────
   const iptvCatM = pathname.match(/^\/catalog\/tv\/([^/]+?)(?:\/(.+))?\.json$/);
   if (iptvCatM) {
     noCache(res);
     const catId = decodeURIComponent(iptvCatM[1]);
     const extra = {};
-    if (iptvCatM[2]) iptvCatM[2].split('/').forEach(seg => { const [k,...v]=seg.split('='); if(k) extra[k]=decodeURIComponent(v.join('=')||''); });
+    if (iptvCatM[2]) iptvCatM[2].split('/').forEach(seg => {
+      const [k, ...v] = seg.split('='); if (k) extra[k] = decodeURIComponent(v.join('=') || '');
+    });
     if (query.extra)  Object.assign(extra, parseExtra(String(query.extra)));
     if (query.search) extra.search = String(query.search);
     if (query.genre)  extra.genre  = String(query.genre);
@@ -1206,11 +1362,9 @@ const server = http.createServer(async (req, res) => {
     return json(res, handleIptvCatalog(catId, extra));
   }
 
-  // ── IPTV meta ─────────────────────────────────────────────────────────────
   const iptvMetaM = pathname.match(/^\/meta\/tv\/(.+)\.json$/);
   if (iptvMetaM) { noCache(res); return json(res, handleIptvMeta(iptvMetaM[1])); }
 
-  // ── IPTV stream ───────────────────────────────────────────────────────────
   const iptvStreamM = pathname.match(/^\/stream\/tv\/(.+)\.json$/);
   if (iptvStreamM) {
     noCache(res);
@@ -1222,7 +1376,6 @@ const server = http.createServer(async (req, res) => {
   // ██  MOVIE ADDON ROUTES  (/movie/*)
   // ══════════════════════════════════════════════════════════════════════════
 
-  // ── /movie/manifest.json ──────────────────────────────────────────────────
   if (pathname === '/movie/manifest.json') {
     noCache(res);
     const m = buildMovieManifest();
@@ -1230,26 +1383,28 @@ const server = http.createServer(async (req, res) => {
     return json(res, m);
   }
 
-  // ── Movie catalog ─────────────────────────────────────────────────────────
   const movCatM = pathname.match(/^\/movie\/catalog\/movie\/([^/]+?)(?:\/(.+))?\.json$/);
   if (movCatM) {
     noCache(res);
     const catId = decodeURIComponent(movCatM[1]);
     const extra = {};
-    if (movCatM[2]) movCatM[2].split('/').forEach(seg => { const [k,...v]=seg.split('='); if(k) extra[k]=decodeURIComponent(v.join('=')||''); });
+    if (movCatM[2]) movCatM[2].split('/').forEach(seg => {
+      const [k, ...v] = seg.split('='); if (k) extra[k] = decodeURIComponent(v.join('=') || '');
+    });
     if (query.extra)  Object.assign(extra, parseExtra(String(query.extra)));
     if (query.search) extra.search = String(query.search);
     if (query.genre)  extra.genre  = String(query.genre);
     if (query.skip)   extra.skip   = String(query.skip);
-    debug(`[MOVIE-CATALOG] ${catId} search="${extra.search||''}" genre="${extra.genre||''}" skip=${extra.skip||0}`);
     return json(res, handleMovieCatalog(catId, extra));
   }
 
-  // ── Movie meta ────────────────────────────────────────────────────────────
   const movMetaM = pathname.match(/^\/movie\/meta\/movie\/(.+)\.json$/);
-  if (movMetaM) { noCache(res); return json(res, handleMovieMeta(movMetaM[1])); }
+  if (movMetaM) {
+    noCache(res);
+    try { return json(res, await handleMovieMeta(movMetaM[1])); }
+    catch(e) { err('[MOVIE-META]', e.message); return json(res, { meta: null }); }
+  }
 
-  // ── Movie stream ──────────────────────────────────────────────────────────
   const movStreamM = pathname.match(/^\/movie\/stream\/movie\/(.+)\.json$/);
   if (movStreamM) {
     noCache(res);
@@ -1257,7 +1412,6 @@ const server = http.createServer(async (req, res) => {
     catch(e) { err('[MOVIE-STREAM]', e.message); return json(res, { streams: [] }); }
   }
 
-  // ── /movie/ root → movie install page ────────────────────────────────────
   if (pathname === '/movie' || pathname === '/movie/') {
     res.writeHead(302, { Location: '/install' }); return res.end();
   }
@@ -1266,45 +1420,49 @@ const server = http.createServer(async (req, res) => {
   // ██  M3U PLAYLIST ROUTES
   // ══════════════════════════════════════════════════════════════════════════
 
-  const PLAYLIST_ALIASES = ['/playlist.m3u','/p.m3u','/iptv.m3u','/live.m3u','/channels.m3u'];
+  const PLAYLIST_ALIASES = ['/playlist.m3u', '/p.m3u', '/iptv.m3u', '/live.m3u', '/channels.m3u'];
   const groupM2 = pathname.match(/^\/playlist\/(.+)\.m3u$/);
   if (PLAYLIST_ALIASES.includes(pathname) || groupM2) {
     const filterGroup = groupM2 ? decodeURIComponent(groupM2[1]) : null;
-    const all      = getEnabledStreams();
-    const filtered = filterGroup ? all.filter(s => (s.group||'Uncategorized') === filterGroup) : all;
-    const settings = getIptvSettings();
-    const pName    = filterGroup ? `${settings.addonName} - ${filterGroup}` : settings.addonName;
-    if (!filtered.length) { res.writeHead(filterGroup ? 404 : 200, {'Content-Type':'text/plain;charset=utf-8'}); return res.end(filterGroup ? `Group "${filterGroup}" not found.` : '#EXTM3U\n# No streams yet. Open configurator.'); }
+    const all         = getEnabledStreams();
+    const filtered    = filterGroup ? all.filter(s => (s.group || 'Uncategorized') === filterGroup) : all;
+    const settings    = getIptvSettings();
+    const pName       = filterGroup ? `${settings.addonName} - ${filterGroup}` : settings.addonName;
+    if (!filtered.length) {
+      res.writeHead(filterGroup ? 404 : 200, { 'Content-Type': 'text/plain;charset=utf-8' });
+      return res.end(filterGroup ? `Group "${filterGroup}" not found.` : '#EXTM3U\n# No streams yet. Open configurator.');
+    }
     const content = generateM3U(filtered, pName);
-    const fname   = filterGroup ? `${filterGroup.replace(/\s+/g,'-')}.m3u` : 'playlist.m3u';
-    res.writeHead(200, { 'Content-Type':'application/x-mpegurl;charset=utf-8', 'Content-Disposition':`inline;filename="${fname}"`, 'Content-Length':Buffer.byteLength(content,'utf8'), 'Access-Control-Allow-Origin':'*', 'Cache-Control':'no-cache,no-store', 'X-Stream-Count':String(filtered.length) });
+    const fname   = filterGroup ? `${filterGroup.replace(/\s+/g, '-')}.m3u` : 'playlist.m3u';
+    res.writeHead(200, {
+      'Content-Type'       : 'application/x-mpegurl;charset=utf-8',
+      'Content-Disposition': `inline;filename="${fname}"`,
+      'Content-Length'     : Buffer.byteLength(content, 'utf8'),
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control'      : 'no-cache,no-store',
+      'X-Stream-Count'     : String(filtered.length),
+    });
     log(`[M3U] ${filtered.length} streams → ${pathname}`);
     return res.end(content);
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ██  LOGO / FAVICON
-  // ══════════════════════════════════════════════════════════════════════════
-
+  // ── Logo / Favicon ────────────────────────────────────────────────────────
   if (pathname === '/logo.png' || pathname === '/favicon.ico') {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7C3AED"/><stop offset="100%" stop-color="#4F46E5"/></linearGradient></defs><rect width="200" height="200" rx="40" fill="url(#g)"/><text x="100" y="130" font-size="100" text-anchor="middle" fill="white">📡</text><text x="100" y="175" font-size="22" font-family="Arial,sans-serif" font-weight="bold" text-anchor="middle" fill="rgba(255,255,255,0.8)">JASH</text></svg>`;
-    res.writeHead(200, { 'Content-Type':'image/svg+xml', 'Cache-Control':'public,max-age=86400' });
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public,max-age=86400' });
     return res.end(svg);
   }
-
   if (pathname === '/movie-logo.png') {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#EA580C"/><stop offset="100%" stop-color="#D97706"/></linearGradient></defs><rect width="200" height="200" rx="40" fill="url(#g)"/><text x="100" y="130" font-size="100" text-anchor="middle" fill="white">🎬</text><text x="100" y="175" font-size="18" font-family="Arial,sans-serif" font-weight="bold" text-anchor="middle" fill="rgba(255,255,255,0.8)">MOVIES</text></svg>`;
-    res.writeHead(200, { 'Content-Type':'image/svg+xml', 'Cache-Control':'public,max-age=86400' });
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public,max-age=86400' });
     return res.end(svg);
   }
 
-  // ── /install or /addon → install page ────────────────────────────────────
+  // ── /install ──────────────────────────────────────────────────────────────
   if (pathname === '/install' || pathname === '/addon') {
-    res.writeHead(200, { 'Content-Type':'text/html;charset=utf-8' });
+    res.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8' });
     return res.end(installPage());
   }
-
-  // ── /configure redirect ───────────────────────────────────────────────────
   if (pathname === '/configure') { res.writeHead(302, { Location: '/' }); return res.end(); }
 
   // ── Static files / SPA ───────────────────────────────────────────────────
@@ -1316,15 +1474,18 @@ const server = http.createServer(async (req, res) => {
     return serveFile(res, path.join(DIST_DIR, 'index.html'));
   }
 
-  // ── No build yet ──────────────────────────────────────────────────────────
-  res.writeHead(200, { 'Content-Type':'text/html;charset=utf-8' });
+  // ── No build yet → install page ──────────────────────────────────────────
+  res.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8' });
   res.end(installPage());
 });
 
 // ─── Error handlers ────────────────────────────────────────────────────────────
 process.on('uncaughtException',  e => err('Uncaught:', e.message));
 process.on('unhandledRejection', r => err('Unhandled:', String(r)));
-server.on('error', e => { if (e.code === 'EADDRINUSE') { err(`Port ${PORT} in use`); process.exit(1); } err('Server:', e.message); });
+server.on('error', e => {
+  if (e.code === 'EADDRINUSE') { err(`Port ${PORT} in use`); process.exit(1); }
+  err('Server:', e.message);
+});
 
 // ─── TCP keepalive ────────────────────────────────────────────────────────────
 server.on('connection', socket => {
@@ -1338,12 +1499,14 @@ server.on('connection', socket => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function startKeepalive() {
-  const INTERVAL = 14 * 60 * 1000;
+  const INTERVAL = 14 * 60 * 1000; // 14 minutes
   const pingUrl  = `${PUBLIC_URL}/health`;
   setInterval(() => {
     debug(`[KEEPALIVE] ping → ${pingUrl}`);
     const lib = pingUrl.startsWith('https') ? https : http;
-    const req = lib.get(pingUrl, { timeout: 10000 }, res => { debug(`[KEEPALIVE] OK (${res.statusCode})`); res.resume(); });
+    const req = lib.get(pingUrl, { timeout: 10000 }, res => {
+      debug(`[KEEPALIVE] OK (${res.statusCode})`); res.resume();
+    });
     req.on('error', e => debug(`[KEEPALIVE] fail: ${e.message}`));
     req.on('timeout', () => { req.destroy(); debug('[KEEPALIVE] timeout'); });
   }, INTERVAL);
@@ -1353,17 +1516,18 @@ function startKeepalive() {
 // ─── Start ────────────────────────────────────────────────────────────────────
 server.listen(PORT, '0.0.0.0', () => {
   const iptvStreams  = getEnabledStreams();
-  const iptvGroups  = getIptvGroups();
-  const movieStream = getEnabledMovies();
-  const movieGroups = groupMovies(movieStream);
-  const iptvM       = buildIptvManifest();
-  const movieM      = buildMovieManifest();
-  const host        = PUBLIC_URL.replace(/^https?:\/\//, '');
+  const iptvGroups   = getIptvGroups();
+  const movieStreams = getEnabledMovies();
+  const movieGroups  = groupMovies(movieStreams);
+  const iptvM        = buildIptvManifest();
+  const movieM       = buildMovieManifest();
+  const host         = PUBLIC_URL.replace(/^https?:\/\//, '');
 
   log('═══════════════════════════════════════════════════════════════════════');
-  log(`🚀  Jash Addon Backend v11.0`);
+  log(`🚀  Jash Addon Backend v12.0`);
   log(`📡  Port         : ${PORT}`);
   log(`🌐  Public URL   : ${PUBLIC_URL}`);
+  log(`🎭  TMDB Key     : ${TMDB_KEY ? '✅ Set (' + TMDB_KEY.slice(0,8) + '…)' : '⚠️  Not set (set TMDB_API_KEY env var)'}`);
   log('───────────────────────────────────────────────────────────────────────');
   log(`📺  IPTV ADDON   : ${PUBLIC_URL}/manifest.json`);
   log(`    Stremio      : stremio://${host}/manifest.json`);
@@ -1373,7 +1537,7 @@ server.listen(PORT, '0.0.0.0', () => {
   log(`🎬  MOVIE ADDON  : ${PUBLIC_URL}/movie/manifest.json`);
   log(`    Stremio      : stremio://${host}/movie/manifest.json`);
   log(`    Version      : ${movieM.version}  (${MOVIE_ID})`);
-  log(`    Movies       : ${movieGroups.length} unique | Streams: ${movieStream.length} | Catalogs: ${movieM.catalogs.length}`);
+  log(`    Movies       : ${movieGroups.length} unique | Streams: ${movieStreams.length} | Catalogs: ${movieM.catalogs.length}`);
   log('───────────────────────────────────────────────────────────────────────');
   log(`⚙️   Configurator : ${PUBLIC_URL}/`);
   log(`🛠️   Install Page : ${PUBLIC_URL}/install`);
