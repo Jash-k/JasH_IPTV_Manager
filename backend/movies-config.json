@@ -1,0 +1,11 @@
+{
+  "streams": [],
+  "settings": {
+    "addonId": "community.jash-movies",
+    "addonName": "Jash Movies",
+    "tmdbApiKey": "",
+    "combineQualities": true,
+    "removeDuplicates": true,
+    "sortAlphabetically": true
+  }
+}

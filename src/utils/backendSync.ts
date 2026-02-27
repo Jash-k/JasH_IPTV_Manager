@@ -1,77 +1,37 @@
-/**
- * JASH ADDON — Backend Sync Utility v2
- * Pushes stream configuration from React frontend to the backend server.
- */
-
-export interface SyncResult {
-  ok: boolean;
-  streams?: number;
-  error?: string;
-  version?: string;
-  backendUrl?: string;
-}
-
-export interface BackendHealth {
-  status: string;
-  addon: string;
-  streams: number;
-  groups: number;
-  cache: number;
-  uptime: number;
-  publicUrl: string;
-  manifestUrl: string;
-}
-
-/**
- * Detect the backend base URL.
- * • Production (Render/Koyeb/Railway): same origin as the React app
- * • Local dev: Vite runs on :5173 but backend runs on :7000
- */
+// ─── Backend URL Detection ─────────────────────────────────────────────────────
 export function getBackendBase(): string {
   if (typeof window === 'undefined') return 'http://localhost:7000';
-
   const { protocol, hostname, port } = window.location;
-
-  // Production — same host serves both frontend and backend
+  // In production (Render/Koyeb/Railway), the backend serves the frontend too
   if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
-    const portSuffix =
-      port && port !== '80' && port !== '443' ? `:${port}` : '';
-    return `${protocol}//${hostname}${portSuffix}`;
+    return `${protocol}//${hostname}${port ? `:${port}` : ''}`;
   }
-
-  // Local dev — backend runs on 7000, Vite on 5173
+  // Local development: Vite runs on 5173, backend on 7000
   return 'http://localhost:7000';
 }
 
-/**
- * Manifest URL — the https:// URL to paste into Stremio.
- */
 export function getManifestUrl(): string {
   return `${getBackendBase()}/manifest.json`;
 }
 
-/**
- * Stremio deep-link format:
- *   stremio://HOST:PORT/manifest.json
- * (no protocol prefix — Stremio handles this itself)
- */
-export function getStremioInstallUrl(): string {
-  const base    = getBackendBase();
-  const noProto = base.replace(/^https?:\/\//, '');
-  return `stremio://${noProto}/manifest.json`;
+export function getMovieManifestUrl(): string {
+  return `${getBackendBase()}/movie/manifest.json`;
 }
 
-/**
- * Main playlist URL — short, memorable, permanent.
- * Use in Tivimate, OTT Navigator, GSE IPTV, VLC, Kodi, etc.
- */
+export function getStremioInstallUrl(): string {
+  const base = getBackendBase().replace(/^https?:\/\//, '');
+  return `stremio://${base}/manifest.json`;
+}
+
+export function getMovieStremioInstallUrl(): string {
+  const base = getBackendBase().replace(/^https?:\/\//, '');
+  return `stremio://${base}/movie/manifest.json`;
+}
+
 export function getPlaylistUrl(): string {
   return `${getBackendBase()}/playlist.m3u`;
 }
 
-/**
- * Short alias URLs — even shorter for easy TV typing.
- */
 export function getShortPlaylistUrls(): Record<string, string> {
   const base = getBackendBase();
   return {
@@ -83,124 +43,127 @@ export function getShortPlaylistUrls(): Record<string, string> {
   };
 }
 
-/**
- * Per-group playlist URL.
- */
 export function getGroupPlaylistUrl(groupName: string): string {
-  const base = getBackendBase();
-  return `${base}/playlist/${encodeURIComponent(groupName)}.m3u`;
+  return `${getBackendBase()}/playlist/${encodeURIComponent(groupName)}.m3u`;
 }
 
-/**
- * Fetch playlist info from backend (stream count, group URLs, etc.)
- */
-export interface PlaylistInfo {
-  total      : number;
-  groups     : number;
-  playlistUrl: string;
-  shortUrls  : Record<string, string>;
-  groupUrls  : Array<{ group: string; url: string; count: number }>;
-  addonName  : string;
-  manifestUrl: string;
+export function getInstallPageUrl(): string {
+  return `${getBackendBase()}/install`;
 }
 
-export async function fetchPlaylistInfo(): Promise<PlaylistInfo | null> {
-  const base = getBackendBase();
+// ─── Health Check ──────────────────────────────────────────────────────────────
+export async function checkBackendHealth(): Promise<{
+  online: boolean;
+  data?: Record<string, unknown>;
+  error?: string;
+}> {
   try {
-    const res = await fetch(`${base}/api/playlist-info`, {
-      signal: AbortSignal.timeout(5000),
+    const res = await fetch(`${getBackendBase()}/health`, {
+      method : 'GET',
+      headers: { 'Accept': 'application/json' },
+      signal : AbortSignal.timeout(8000),
     });
-    if (!res.ok) return null;
-    return await res.json() as PlaylistInfo;
-  } catch {
-    return null;
+    if (!res.ok) return { online: false, error: `HTTP ${res.status}` };
+    const data = await res.json();
+    return { online: true, data };
+  } catch (e: unknown) {
+    return { online: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-/**
- * Sync the full configuration to the backend.
- * After this call, the backend bumps its manifest version so
- * Stremio detects new channels without requiring addon reinstall.
- */
-export async function syncConfigToBackend(config: {
+// ─── IPTV Sync ─────────────────────────────────────────────────────────────────
+export async function syncConfigToBackend(payload: {
   streams: unknown[];
-  groups: unknown[];
-  settings: unknown;
-  sources?: unknown[];
+  groups?: unknown[];
   combinedChannels?: unknown[];
-}): Promise<SyncResult> {
-  const base    = getBackendBase();
-  const syncUrl = `${base}/api/sync`;
-
+  settings?: Record<string, unknown>;
+}): Promise<{ ok: boolean; message: string; version?: string; data?: unknown }> {
   try {
-    const response = await fetch(syncUrl, {
+    const res = await fetch(`${getBackendBase()}/api/sync`, {
       method : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify(config),
-      signal : AbortSignal.timeout(15000),
+      body   : JSON.stringify(payload),
+      signal : AbortSignal.timeout(30000),
     });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => 'Unknown error');
-      return { ok: false, error: `HTTP ${response.status}: ${text}`, backendUrl: syncUrl };
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      return { ok: false, message: data.error || `HTTP ${res.status}` };
     }
-
-    const data = await response.json();
     return {
-      ok      : true,
-      streams : data.streams,
-      version : data.version,
-      backendUrl: base,
+      ok     : true,
+      message: `✅ Synced ${data.streams} streams${data.autoCombined ? ` (${data.autoCombined} auto-combined)` : ''} · v${data.version}`,
+      version: data.version,
+      data,
     };
-
-  } catch (e) {
-    const msg = (e as Error).message || String(e);
-    const isNetErr =
-      msg.includes('Failed to fetch') ||
-      msg.includes('ECONNREFUSED')    ||
-      msg.includes('NetworkError')    ||
-      msg.includes('Load failed')     ||
-      msg.includes('AbortError')      ||
-      msg.includes('timeout');
-
-    return {
-      ok       : false,
-      error    : isNetErr
-        ? 'Backend not reachable. Is the server running? Check the Backend tab.'
-        : msg,
-      backendUrl: syncUrl,
-    };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('fetch') || msg.includes('Failed')) {
+      return { ok: false, message: '❌ Backend offline. Deploy the server first.' };
+    }
+    return { ok: false, message: `❌ Sync failed: ${msg}` };
   }
 }
 
-/**
- * Check if the backend is alive and return health data.
- */
-export async function checkBackendHealth(): Promise<BackendHealth | null> {
-  const base = getBackendBase();
+// ─── Movie Sync ────────────────────────────────────────────────────────────────
+export async function syncMoviesToBackend(payload: {
+  streams: unknown[];
+  settings?: Record<string, unknown>;
+}): Promise<{ ok: boolean; message: string; version?: string; data?: unknown }> {
   try {
-    const response = await fetch(`${base}/health`, {
-      signal: AbortSignal.timeout(5000),
+    const res = await fetch(`${getBackendBase()}/api/movie-sync`, {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify(payload),
+      signal : AbortSignal.timeout(30000),
     });
-    if (!response.ok) return null;
-    return await response.json() as BackendHealth;
-  } catch {
-    return null;
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      return { ok: false, message: data.error || `HTTP ${res.status}` };
+    }
+    return {
+      ok     : true,
+      message: `✅ Synced ${data.streams} streams · ${data.uniqueMovies} unique movies · v${data.version}`,
+      version: data.version,
+      data,
+    };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, message: `❌ Movie sync failed: ${msg}` };
   }
 }
 
-/**
- * Clear the backend HLS stream cache.
- */
-export async function clearBackendCache(): Promise<boolean> {
-  const base = getBackendBase();
+// ─── Clear Cache ───────────────────────────────────────────────────────────────
+export async function clearBackendCache(): Promise<{ ok: boolean; cleared?: number }> {
   try {
-    const response = await fetch(`${base}/api/cache`, {
-      method : 'DELETE',
-      signal : AbortSignal.timeout(5000),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+    const res  = await fetch(`${getBackendBase()}/api/cache`, { method: 'DELETE', signal: AbortSignal.timeout(5000) });
+    const data = await res.json();
+    return { ok: true, cleared: data.cleared };
+  } catch { return { ok: false }; }
+}
+
+// ─── Fetch Playlist Info ───────────────────────────────────────────────────────
+export async function fetchPlaylistInfo(): Promise<{
+  total: number; groups: number;
+  playlistUrl: string; shortUrls: Record<string, string>;
+  groupUrls: { group: string; url: string; count: number }[];
+} | null> {
+  try {
+    const res  = await fetch(`${getBackendBase()}/api/playlist-info`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+// ─── Fetch Install Info ────────────────────────────────────────────────────────
+export async function fetchInstallInfo(): Promise<{
+  iptv: { manifestUrl: string; stremioUrl: string; webInstallUrl: string; version: string; streams: number };
+  movie: { manifestUrl: string; stremioUrl: string; webInstallUrl: string; version: string; movies: number };
+  configureUrl: string; playlistUrl: string;
+  shortUrls: Record<string, string>;
+} | null> {
+  try {
+    const res  = await fetch(`${getBackendBase()}/api/install`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
 }

@@ -12,9 +12,10 @@ import {
   getShortPlaylistUrls,
   getGroupPlaylistUrl,
   fetchPlaylistInfo,
-  PlaylistInfo,
   checkBackendHealth,
 } from '../utils/backendSync';
+
+type PlaylistInfo = Awaited<ReturnType<typeof fetchPlaylistInfo>>;
 
 interface Props { store: AppStore; }
 
@@ -428,7 +429,7 @@ export const ExportPanel: React.FC<Props> = ({ store }) => {
                         group: g.name,
                         url  : getGroupPlaylistUrl(g.name),
                         count: streams.filter(s => s.group === g.name && s.enabled).length,
-                      }))).map(g => (
+                      }))).map((g: { group: string; url: string; count: number }) => (
                         <div key={g.group} className="flex items-center gap-3 bg-gray-900/60 border border-gray-700/50 rounded-xl px-4 py-3">
                           <div className="flex-1 min-w-0">
                             <div className="text-white text-sm font-medium truncate flex items-center gap-2">

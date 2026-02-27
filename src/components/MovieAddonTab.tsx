@@ -1,7 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { MovieStream, MovieSource, MovieAddonSettings } from '../types';
 import { fetchM3U } from '../utils/m3uParser';
-// jsonSourceParser imported for future use
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
 const MOVIE_STREAMS_KEY  = 'jash_movie_streams';
@@ -397,11 +396,59 @@ const MovieAddonTab: React.FC = () => {
   const [showCode, setShowCode] = useState(false);
   const [editingStream, setEditingStream] = useState<MovieStream | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [backendOnline, setBackendOnline] = useState(false);
+  const [lastSyncMsg, setLastSyncMsg] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [movieManifestUrl] = useState(() => {
+    try { return `${window.location.protocol}//${window.location.hostname}${window.location.port ? ':' + window.location.port : ''}/movie/manifest.json`; } catch { return '/movie/manifest.json'; }
+  });
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const notify = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     setNotification({ msg, type });
     setTimeout(() => setNotification(null), 3500);
   };
+
+  // ── Backend health check ────────────────────────────────────────────────
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch(`${movieManifestUrl.replace('/movie/manifest.json', '')}/health`, { signal: AbortSignal.timeout(5000) });
+        setBackendOnline(res.ok);
+      } catch { setBackendOnline(false); }
+    };
+    checkHealth();
+    const iv = setInterval(checkHealth, 30000);
+    return () => clearInterval(iv);
+  }, [movieManifestUrl]);
+
+  // ── Sync movies to backend ──────────────────────────────────────────────
+  const handleMovieSync = useCallback(async () => {
+    setSyncing(true);
+    try {
+      const { syncMoviesToBackend: syncFn } = await import('../utils/backendSync');
+      const result = await syncFn({
+        streams: streams.filter(s => s.enabled),
+        settings: settings as unknown as Record<string, unknown>,
+      });
+      setLastSyncMsg({ ok: result.ok, msg: result.message });
+      notify(result.message, result.ok ? 'success' : 'error');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastSyncMsg({ ok: false, msg });
+      notify(`Sync failed: ${msg}`, 'error');
+    } finally { setSyncing(false); }
+  }, [streams, settings, notify]);
+
+  // ── Copy to clipboard ───────────────────────────────────────────────────
+  const copyToClipboard = useCallback(async (text: string, key: string) => {
+    try { await navigator.clipboard.writeText(text); } catch {
+      const el = document.createElement('textarea'); el.value = text;
+      document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
+    }
+    setCopiedKey(key); setTimeout(() => setCopiedKey(null), 2500);
+    notify('Copied!', 'success');
+  }, [notify]);
 
   const saveStreams = (s: MovieStream[]) => { saveLS(MOVIE_STREAMS_KEY, s); setStreams(s); };
   const saveSources = (s: MovieSource[]) => { saveLS(MOVIE_SOURCES_KEY, s); setSources(s); };
@@ -1042,6 +1089,11 @@ const MovieAddonTab: React.FC = () => {
 
             {/* Action buttons */}
             <div className="flex flex-wrap gap-3">
+              <button onClick={handleMovieSync} disabled={syncing || !streams.filter(s => s.enabled).length}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold transition-colors ${syncing ? 'bg-violet-800 text-violet-300 cursor-wait animate-pulse' : backendOnline ? 'bg-violet-600 hover:bg-violet-700 text-white' : 'bg-gray-600 text-gray-400 cursor-not-allowed'}`}>
+                <span className={syncing ? 'animate-spin inline-block' : ''}>🔄</span>
+                {syncing ? 'Syncing…' : `Sync ${streams.filter(s => s.enabled).length} Movies to Backend`}
+              </button>
               <button onClick={downloadAddon}
                 className="flex items-center gap-2 bg-yellow-500 hover:bg-yellow-600 text-black px-5 py-2.5 rounded-lg text-sm font-bold transition-colors">
                 📦 Download Addon Files
@@ -1054,6 +1106,39 @@ const MovieAddonTab: React.FC = () => {
                 className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors">
                 📋 Download M3U Playlist
               </button>
+            </div>
+
+            {/* Backend sync status */}
+            {lastSyncMsg && (
+              <div className={`px-4 py-3 rounded-lg text-sm ${lastSyncMsg.ok ? 'bg-emerald-900/30 border border-emerald-700/40 text-emerald-300' : 'bg-orange-900/30 border border-orange-700/40 text-orange-300'}`}>
+                {lastSyncMsg.msg}
+              </div>
+            )}
+
+            {/* Movie Addon install URLs */}
+            <div className="bg-orange-900/20 border border-orange-700/30 rounded-xl p-4 space-y-3">
+              <div className="text-orange-300 font-semibold text-sm flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${backendOnline ? 'bg-green-400 animate-pulse' : 'bg-gray-500'}`} />
+                {backendOnline ? 'Backend Online — Install Movie Addon' : 'Backend Offline — Deploy first'}
+              </div>
+              {backendOnline && (
+                <>
+                  <div className="flex gap-2">
+                    <div className="flex-1 bg-gray-900 border border-orange-600/40 rounded-lg px-3 py-2.5 font-mono text-orange-300 text-xs break-all">{movieManifestUrl}</div>
+                    <button onClick={() => copyToClipboard(movieManifestUrl, 'mov-manifest')}
+                      className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors flex-shrink-0 ${copiedKey === 'mov-manifest' ? 'bg-emerald-600 text-white' : 'bg-orange-700 hover:bg-orange-600 text-white'}`}>
+                      {copiedKey === 'mov-manifest' ? '✓' : '📋'}
+                    </button>
+                  </div>
+                  <a href={movieManifestUrl.replace(/^https?:\/\//, 'stremio://').replace('/movie/manifest.json', '')+'/movie/manifest.json'}
+                    className="flex items-center justify-center gap-2 w-full py-2.5 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white rounded-lg text-sm font-bold transition-all">
+                    🎬 Install Movie Addon in Stremio
+                  </a>
+                </>
+              )}
+              <div className="text-xs text-orange-200/60">
+                Filters in Stremio: All Movies · 4K UHD · 1080p HD · ⭐ Top Rated · 📅 By Year · Genre · Search
+              </div>
             </div>
 
             {/* Generated Code Preview */}
