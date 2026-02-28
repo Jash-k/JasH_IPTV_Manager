@@ -173,6 +173,7 @@ export const StreamsTab: React.FC<Props> = ({ store, onOpenPlayer }) => {
         <div className="fixed inset-0 z-50 bg-black/95 flex flex-col" onClick={() => setPlayerStream(null)}>
           <div className="w-full h-full" onClick={e => e.stopPropagation()}>
             <IPTVPlayer
+              streams={streams}
               initialStream={playerStream}
               onClose={() => setPlayerStream(null)}
               embedded={false}

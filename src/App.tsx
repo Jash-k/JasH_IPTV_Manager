@@ -14,7 +14,6 @@ import { StreamHandlerTab } from './components/StreamHandlerTab';
 import { BackendPanel } from './components/BackendPanel';
 import { SelectionModelsTab } from './components/SelectionModelsTab';
 import IPTVPlayer from './components/IPTVPlayer';
-import MovieAddonTab from './components/MovieAddonTab';
 import { checkBackendHealth } from './utils/backendSync';
 import { Stream } from './types';
 
@@ -54,7 +53,7 @@ export function App() {
       <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center gap-6">
         <div className="relative w-20 h-20">
           <div className="absolute inset-0 rounded-full border-4 border-purple-500/20" />
-          <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-purple-500 loading-spinner" />
+          <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-purple-500 animate-spin" />
           <div className="absolute inset-3 rounded-full bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center text-2xl shadow-lg">
             📡
           </div>
@@ -68,7 +67,6 @@ export function App() {
   }
 
   const isPlayerTab = activeTab === 'player';
-  const isMovieTab  = activeTab === 'movies';
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -86,15 +84,11 @@ export function App() {
       {isPlayerTab ? (
         <div className="fixed inset-0 top-[calc(3.5rem+2.75rem)] bg-black z-30">
           <IPTVPlayer
+            streams={streams}
             initialStream={playerStream}
             onClose={() => { setActiveTab('streams'); setPlayerStream(null); }}
             embedded={true}
           />
-        </div>
-      ) : isMovieTab ? (
-        /* Movie addon tab — full height */
-        <div className="fixed inset-0 top-[calc(3.5rem+2.75rem)] bg-gray-950 z-30 overflow-hidden">
-          <MovieAddonTab />
         </div>
       ) : (
         <main className="max-w-screen-2xl mx-auto px-4 py-6">
@@ -114,7 +108,7 @@ export function App() {
         </main>
       )}
 
-      {!isPlayerTab && !isMovieTab && (
+      {!isPlayerTab && (
         <footer className="border-t border-gray-800 mt-12 py-5 px-4">
           <div className="max-w-screen-2xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-gray-600">
             <div className="flex items-center gap-2">
@@ -138,7 +132,7 @@ export function App() {
       )}
 
       {/* Floating action buttons */}
-      {streams.length > 0 && !isPlayerTab && !isMovieTab &&
+      {streams.length > 0 && !isPlayerTab &&
         activeTab !== 'export' && activeTab !== 'handler' && activeTab !== 'backend' && (
         <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end gap-2">
           <div className="flex items-center gap-2 bg-gray-900 border border-gray-700 rounded-xl px-3 py-1.5 text-xs text-gray-300 shadow-lg">
@@ -146,11 +140,6 @@ export function App() {
             <span>enabled</span>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setActiveTab('movies')} title="Movie Addon"
-              className="flex items-center gap-2 bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white px-4 py-3 rounded-xl font-semibold text-sm transition-all shadow-xl active:scale-95">
-              <span className="text-lg">🎬</span>
-              <span className="hidden sm:inline">Movies</span>
-            </button>
             <button onClick={() => setActiveTab('player')} title="Open IPTV Player"
               className="flex items-center gap-2 bg-gradient-to-r from-orange-600 to-rose-600 hover:from-orange-500 hover:to-rose-500 text-white px-4 py-3 rounded-xl font-semibold text-sm transition-all shadow-xl active:scale-95">
               <span className="text-lg">▶️</span>
@@ -175,13 +164,13 @@ export function App() {
         </div>
       )}
 
-      {/* Back button from player/movies tab */}
-      {(isPlayerTab || isMovieTab) && (
+      {/* Back button from player tab */}
+      {isPlayerTab && (
         <div className="fixed bottom-6 left-6 z-40">
           <button
-            onClick={() => { setActiveTab(isMovieTab ? 'sources' : 'streams'); setPlayerStream(null); }}
+            onClick={() => { setActiveTab('streams'); setPlayerStream(null); }}
             className="flex items-center gap-2 bg-gray-900/90 hover:bg-gray-800 border border-gray-700 text-white px-4 py-2.5 rounded-xl text-sm transition-all shadow-xl">
-            ← Back
+            ← Back to Streams
           </button>
         </div>
       )}

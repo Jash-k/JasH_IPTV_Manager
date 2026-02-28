@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * ╔══════════════════════════════════════════════════════════════════════════╗
- * ║         JASH ADDON — Unified Backend Server v12.0                       ║
- * ║   IPTV Addon  →  /manifest.json                                         ║
- * ║   Movie Addon →  /movie/manifest.json                                   ║
- * ║   Both ready to install in Stremio on first boot                        ║
+ * ║         JASH ADDON — IPTV Backend Server v13.0                          ║
+ * ║   IPTV Addon  →  /manifest.json  (ready to install in Stremio)          ║
+ * ║   HLS/DASH/DRM stream extraction · Samsung Tizen optimized              ║
+ * ║   M3U playlist · Keepalive · Auto-combine same channels                 ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -20,18 +20,14 @@ const urlMod = require('url');
 const PORT        = parseInt(process.env.PORT || '7000', 10);
 const DEBUG       = process.env.DEBUG === 'true';
 const PUBLIC_URL  = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-const TMDB_KEY    = process.env.TMDB_API_KEY || '';   // ← Set this in Render/Koyeb env vars
 const DIST_DIR    = path.join(__dirname, '..', 'dist');
 const CFG_FILE    = path.join(__dirname, 'streams-config.json');
-const MOV_FILE    = path.join(__dirname, 'movies-config.json');
 const REQ_TIMEOUT = 20000;
-const CACHE_TTL   = 5 * 60 * 1000;
+const CACHE_TTL   = 5 * 60 * 1000; // 5 minutes
 
-// ─── Addon Identities ──────────────────────────────────────────────────────────
-const IPTV_ID    = process.env.ADDON_ID         || 'community.jash-iptv';
-const IPTV_NAME  = process.env.ADDON_NAME       || 'Jash IPTV';
-const MOVIE_ID   = process.env.MOVIE_ADDON_ID   || 'community.jash-movies';
-const MOVIE_NAME = process.env.MOVIE_ADDON_NAME || 'Jash Movies';
+// ─── Addon Identity ────────────────────────────────────────────────────────────
+const ADDON_ID   = process.env.ADDON_ID   || 'community.jash-iptv';
+const ADDON_NAME = process.env.ADDON_NAME || 'Jash IPTV';
 const VER_BASE   = '1.0';
 
 // ─── Logger ────────────────────────────────────────────────────────────────────
@@ -40,47 +36,47 @@ const log   = (...a) => console.log(`[${ts()}]`, ...a);
 const debug = (...a) => DEBUG && console.log(`[${ts()}] [DBG]`, ...a);
 const err   = (...a) => console.error(`[${ts()}] [ERR]`, ...a);
 
-// ─── Caches ────────────────────────────────────────────────────────────────────
+// ─── Stream Cache ──────────────────────────────────────────────────────────────
 const streamCache = new Map();
-const tmdbCache   = new Map(); // title+year → TMDB metadata
-const TMDB_TTL    = 24 * 60 * 60 * 1000; // 24 hours
-
-function getCached(k)        { const c = streamCache.get(k); if (c && Date.now() - c.ts < CACHE_TTL) return c.v; streamCache.delete(k); return null; }
-function setCache(k, v)      { streamCache.set(k, { v, ts: Date.now() }); }
-function getTmdbCached(k)    { const c = tmdbCache.get(k); if (c && Date.now() - c.ts < TMDB_TTL) return c.v; tmdbCache.delete(k); return null; }
-function setTmdbCache(k, v)  { tmdbCache.set(k, { v, ts: Date.now() }); }
+function getCached(k)   { const c = streamCache.get(k); if (c && Date.now() - c.ts < CACHE_TTL) return c.v; streamCache.delete(k); return null; }
+function setCache(k, v) { streamCache.set(k, { v, ts: Date.now() }); }
 
 // ─── ID helpers ────────────────────────────────────────────────────────────────
 const encodeId = s => Buffer.from(String(s), 'utf8').toString('base64url');
 const decodeId = s => { try { return Buffer.from(s, 'base64url').toString('utf8'); } catch { return ''; } };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  IPTV CONFIG
+// ██  CONFIG LOADER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function defaultIptvCfg() {
-  return { streams: [], groups: [], combinedChannels: [], settings: defaultIptvSettings() };
+function defaultSettings() {
+  return {
+    addonId           : ADDON_ID,
+    addonName         : ADDON_NAME,
+    combineMultiQuality: true,
+    sortAlphabetically : true,
+  };
 }
-function defaultIptvSettings() {
-  return { addonId: IPTV_ID, addonName: IPTV_NAME, combineMultiQuality: true, sortAlphabetically: true };
-}
-function loadIptvConfig() {
+
+function loadConfig() {
   try {
-    if (!fs.existsSync(CFG_FILE)) return defaultIptvCfg();
+    if (!fs.existsSync(CFG_FILE)) return { streams: [], groups: [], combinedChannels: [], settings: defaultSettings() };
     const raw = fs.readFileSync(CFG_FILE, 'utf8').trim();
-    if (!raw || raw === '{}' || raw === '[]') return defaultIptvCfg();
+    if (!raw || raw === '{}' || raw === '[]') return { streams: [], groups: [], combinedChannels: [], settings: defaultSettings() };
     const cfg = JSON.parse(raw);
     return {
       streams         : Array.isArray(cfg.streams)          ? cfg.streams          : [],
       groups          : Array.isArray(cfg.groups)           ? cfg.groups           : [],
       combinedChannels: Array.isArray(cfg.combinedChannels) ? cfg.combinedChannels : [],
-      settings        : { ...defaultIptvSettings(), ...(cfg.settings || {}) },
+      settings        : { ...defaultSettings(), ...(cfg.settings || {}) },
     };
-  } catch(e) { err('loadIptvConfig:', e.message); return defaultIptvCfg(); }
+  } catch(e) { err('loadConfig:', e.message); return { streams: [], groups: [], combinedChannels: [], settings: defaultSettings() }; }
 }
-function getIptvSettings() { return { ...defaultIptvSettings(), ...(loadIptvConfig().settings || {}) }; }
+
+function getSettings()      { return { ...defaultSettings(), ...(loadConfig().settings || {}) }; }
+
 function getEnabledStreams() {
-  const { streams, settings } = loadIptvConfig();
+  const { streams, settings } = loadConfig();
   const enabled = streams.filter(s => s.enabled !== false);
   if (settings.sortAlphabetically !== false) {
     return [...enabled].sort((a, b) => {
@@ -92,61 +88,27 @@ function getEnabledStreams() {
   }
   return [...enabled].sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
 }
-function getIptvGroups() {
-  const { groups: stored, settings } = loadIptvConfig();
+
+function getGroups() {
+  const { groups: stored, settings } = loadConfig();
   const streams = getEnabledStreams();
   const names   = [...new Set(streams.map(s => s.group || 'Uncategorized'))];
   if (settings.sortAlphabetically !== false) names.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
   const storedMap = new Map(stored.map(g => [g.name, g]));
   return names
-    .map((name, idx) => ({ id: storedMap.get(name)?.id || `grp_${idx}`, name, enabled: storedMap.get(name)?.enabled !== false }))
+    .map((name, idx) => ({
+      id     : storedMap.get(name)?.id || `grp_${idx}`,
+      name,
+      enabled: storedMap.get(name)?.enabled !== false,
+    }))
     .filter(g => g.enabled);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ██  MOVIE CONFIG
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function defaultMovieCfg() {
-  return { streams: [], settings: defaultMovieSettings() };
-}
-function defaultMovieSettings() {
-  return {
-    addonId          : MOVIE_ID,
-    addonName        : MOVIE_NAME,
-    tmdbApiKey       : TMDB_KEY,  // env var takes priority
-    combineQualities : true,
-    removeDuplicates : true,
-    sortAlphabetically: true,
-  };
-}
-function loadMovieConfig() {
+// ─── Version from file mtime ───────────────────────────────────────────────────
+function getVersion() {
   try {
-    if (!fs.existsSync(MOV_FILE)) return defaultMovieCfg();
-    const raw = fs.readFileSync(MOV_FILE, 'utf8').trim();
-    if (!raw || raw === '{}') return defaultMovieCfg();
-    const cfg = JSON.parse(raw);
-    const s = { ...defaultMovieSettings(), ...(cfg.settings || {}) };
-    // env var always overrides stored key
-    if (TMDB_KEY) s.tmdbApiKey = TMDB_KEY;
-    return { streams: Array.isArray(cfg.streams) ? cfg.streams : [], settings: s };
-  } catch(e) { err('loadMovieConfig:', e.message); return defaultMovieCfg(); }
-}
-function getMovieSettings() {
-  const s = { ...defaultMovieSettings(), ...(loadMovieConfig().settings || {}) };
-  if (TMDB_KEY) s.tmdbApiKey = TMDB_KEY;
-  return s;
-}
-function getEnabledMovies() {
-  const { streams } = loadMovieConfig();
-  return streams.filter(s => s.enabled !== false);
-}
-
-// ─── Version from file timestamp ──────────────────────────────────────────────
-function getVersion(file) {
-  try {
-    if (fs.existsSync(file)) {
-      const patch = Math.floor(fs.statSync(file).mtimeMs / 1000) % 100000;
+    if (fs.existsSync(CFG_FILE)) {
+      const patch = Math.floor(fs.statSync(CFG_FILE).mtimeMs / 1000) % 100000;
       return `${VER_BASE}.${patch}`;
     }
   } catch { /* ok */ }
@@ -154,7 +116,7 @@ function getVersion(file) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  STREAM TYPE HELPERS
+// ██  STREAM TYPE DETECTION
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function detectType(stream) {
@@ -164,13 +126,14 @@ function detectType(stream) {
   if (u.includes('.m3u8') || u.includes('/hls/') || u.includes('index.m3u')) return 'hls';
   return 'direct';
 }
+
 function hasDRM(s) { return !!(s.licenseType || s.licenseKey); }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  CHANNEL NAME NORMALIZER (precise — keeps language words)
+// ██  CHANNEL NAME NORMALIZER
+// Precise — strips ONLY quality/region suffixes, NEVER language/brand words
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ONLY strip quality/region suffixes — NEVER language words
 const STRIP_TOKENS = new Set([
   'hd','sd','fhd','uhd','4k','2k','8k','1080p','720p','480p','360p','2160p',
   'vip','plus','premium','backup','mirror','alt','alternate',
@@ -190,7 +153,7 @@ function normalizeKey(name) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  AUTO-COMBINE (IPTV — same channel from multiple sources)
+// ██  AUTO-COMBINE: same channel from multiple sources → "⭐ Best Streams"
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildAutoCombined(streams) {
@@ -212,330 +175,94 @@ function buildAutoCombined(streams) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  TMDB API — backend fetch with env key
+// ██  MANIFEST BUILDER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function fetchTmdbMeta(title, year, apiKey) {
-  const key = apiKey || TMDB_KEY;
-  if (!key) return null;
+function buildManifest() {
+  const settings  = getSettings();
+  const streams   = getEnabledStreams();
+  const groups    = getGroups();
+  const autoComb  = buildAutoCombined(streams);
+  const version   = getVersion();
+  const catalogs  = [];
 
-  const cacheKey = `${title}_${year || ''}`;
-  const cached   = getTmdbCached(cacheKey);
-  if (cached !== undefined) return cached;
-
-  try {
-    const yearParam = year ? `&year=${year}` : '';
-    const url = `https://api.themoviedb.org/3/search/movie?api_key=${key}&query=${encodeURIComponent(title)}${yearParam}&language=en-US&page=1&include_adult=false`;
-    debug(`[TMDB] search: "${title}" ${year || ''}`);
-    const text = await fetchUrl(url, {});
-    const data = JSON.parse(text);
-    const movie = data.results?.[0];
-    if (!movie) { setTmdbCache(cacheKey, null); return null; }
-
-    // Fetch full details + credits for genres/runtime
-    let genres  = [];
-    let runtime = null;
-    let imdbId  = null;
-    try {
-      const det = JSON.parse(await fetchUrl(
-        `https://api.themoviedb.org/3/movie/${movie.id}?api_key=${key}&append_to_response=external_ids`,
-        {}
-      ));
-      genres  = (det.genres || []).map(g => g.name);
-      runtime = det.runtime || null;
-      imdbId  = det.external_ids?.imdb_id || det.imdb_id || null;
-    } catch { /* detail fetch failed — use search result only */ }
-
-    const meta = {
-      tmdbId    : movie.id,
-      imdbId,
-      poster    : movie.poster_path   ? `https://image.tmdb.org/t/p/w500${movie.poster_path}`   : null,
-      backdrop  : movie.backdrop_path ? `https://image.tmdb.org/t/p/w1280${movie.backdrop_path}` : null,
-      overview  : movie.overview      || null,
-      rating    : movie.vote_average  || null,
-      genres    : genres.length ? genres : (movie.genre_ids || []).map(String),
-      releaseDate: movie.release_date || null,
-      runtime,
-    };
-    setTmdbCache(cacheKey, meta);
-    log(`[TMDB] ✅ "${title}" → id=${movie.id} rating=${meta.rating} genres=${meta.genres.join(',')}`);
-    return meta;
-  } catch(e) {
-    err(`[TMDB] fetch failed for "${title}": ${e.message}`);
-    setTmdbCache(cacheKey, null);
-    return null;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ██  MOVIE HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Quality rank — higher = better
-const Q_RANK = { '4K':5,'2160p':5,'UHD':5,'1080p':4,'FHD':4,'720p':3,'HD':3,'480p':2,'360p':1,'SD':1,'':0 };
-
-function normalizeMovieTitle(title) {
-  return (title || '').toLowerCase()
-    .replace(/\b(4k|uhd|fhd|hd|sd|1080p|720p|480p|2160p|bluray|blu-ray|webrip|web-dl|dvdrip|hdcam|cam|ts|scr|extended|directors|cut|remastered)\b/gi, '')
-    .replace(/[^\w\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Get unique source groups from streams
-function getMovieSources(streams) {
-  const seen = new Map();
-  for (const s of streams) {
-    const grp = s.group || s.source || 'Movies';
-    if (!seen.has(grp)) seen.set(grp, { name: grp, sourceId: s.sourceId, count: 0 });
-    seen.get(grp).count++;
-  }
-  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
-}
-
-// Group movies by normalized title+year, combining quality variants
-// optionally filtered to a specific source group
-function groupMovies(streams, sourceGroup) {
-  const filtered = sourceGroup ? streams.filter(s => (s.group || s.source || 'Movies') === sourceGroup) : streams;
-  const map = new Map();
-  for (const s of filtered) {
-    const key = normalizeMovieTitle(s.title) + '_' + (s.year || '');
-    if (!map.has(key)) {
-      map.set(key, {
-        key, title: s.title, year: s.year,
-        tmdbId: s.tmdbId, imdbId: s.imdbId,
-        poster: s.poster || s.logo,
-        backdrop: s.backdrop,
-        overview: s.overview,
-        rating: s.rating,
-        genres: s.genres || [],
-        releaseDate: s.releaseDate,
-        runtime: s.runtime,
-        sourceGroup: s.group || s.source || 'Movies',
-        streams: [],
-      });
-    }
-    const g = map.get(key);
-    g.streams.push(s);
-    // Keep best metadata
-    if (!g.tmdbId   && s.tmdbId)               g.tmdbId    = s.tmdbId;
-    if (!g.imdbId   && s.imdbId)               g.imdbId    = s.imdbId;
-    if (!g.poster   && (s.poster || s.logo))   g.poster    = s.poster || s.logo;
-    if (!g.backdrop && s.backdrop)             g.backdrop  = s.backdrop;
-    if (!g.overview && s.overview)             g.overview  = s.overview;
-    if (!g.rating   && s.rating)               g.rating    = s.rating;
-    if ((!g.genres || !g.genres.length) && s.genres?.length) g.genres = s.genres;
-    // prefer shorter cleaner title
-    if ((s.title||'').length < (g.title||'').length && s.title && s.title !== 'Unknown') g.title = s.title;
-  }
-  return [...map.values()].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-}
-
-function removeDupMovieStreams(streams) {
-  const seen = new Map();
-  for (const s of streams) {
-    const key = normalizeMovieTitle(s.title) + '_' + (s.year || '') + '_' + (s.url || '');
-    if (!seen.has(key)) seen.set(key, s);
-  }
-  return [...seen.values()];
-}
-
-// ── M3U title parser (backend) ─────────────────────────────────────────────────
-// Extracts clean title, year, quality from tvg-name or comma-name
-function parseMovieTitleBackend(raw) {
-  let s = (raw || '').trim();
-  // detect quality
-  let quality = 'HD';
-  if (/\b(2160p|4k|uhd)\b/i.test(s)) quality = '4K';
-  else if (/\b(1080p|fhd)\b/i.test(s)) quality = '1080p';
-  else if (/\b(720p)\b/i.test(s)) quality = '720p';
-  else if (/\b(480p|sd)\b/i.test(s)) quality = '480p';
-
-  // remove quality brackets
-  s = s.replace(/[\(\[]\s*(4k|uhd|2160p|fhd|1080p|720p|480p|360p|hd|sd)\s*[\)\]]/gi, '');
-
-  // extract year
-  let year;
-  const ym = s.match(/[\(\[]((?:19|20)\d{2})[\)\]]/);
-  if (ym) { year = parseInt(ym[1]); s = s.replace(ym[0], ''); }
-  else {
-    const ty = s.match(/\s+((?:19|20)\d{2})\s*$/);
-    if (ty) { year = parseInt(ty[1]); s = s.replace(ty[0], ''); }
-  }
-
-  // clean up
-  s = s.replace(/[\(\[\]\)]+/g, ' ').replace(/\s+/g, ' ').replace(/[-_]+$/, '').trim();
-  return { title: s || 'Unknown', year, quality };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ██  IPTV MANIFEST
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function buildIptvManifest() {
-  const settings = getIptvSettings();
-  const streams  = getEnabledStreams();
-  const groups   = getIptvGroups();
-  const autoComb = buildAutoCombined(streams);
-  const version  = getVersion(CFG_FILE);
-  const catalogs = [];
-
+  // ── ⭐ Best Streams (auto-combined from 2+ sources) ────────────────────────
   if (autoComb.length > 0) {
+    const bestGenres = [...new Set(autoComb.flatMap(c => c.streams.map(s => s.group)).filter(Boolean))].sort().slice(0, 20);
     catalogs.push({
-      type: 'tv', id: 'jash_best', name: '⭐ Best Streams',
+      type : 'tv',
+      id   : 'jash_best',
+      name : '⭐ Best Streams',
       extra: [
         { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: [...new Set(autoComb.map(c => c.streams[0]?.group).filter(Boolean))].slice(0, 20) },
+        ...(bestGenres.length ? [{ name: 'genre', isRequired: false, options: bestGenres }] : []),
       ],
     });
   }
 
+  // ── One catalog per group ──────────────────────────────────────────────────
   groups.forEach((g, i) => {
     catalogs.push({
-      type: 'tv', id: `jash_cat_${i}`, name: g.name,
+      type : 'tv',
+      id   : `jash_cat_${i}`,
+      name : g.name,
       extra: [{ name: 'search', isRequired: false }],
     });
   });
 
+  // ── Placeholder when no streams yet ───────────────────────────────────────
   if (catalogs.length === 0) {
     catalogs.push({
-      type: 'tv', id: 'jash_cat_default', name: `${settings.addonName} Channels`,
+      type : 'tv',
+      id   : 'jash_cat_default',
+      name : `${settings.addonName} Channels`,
       extra: [{ name: 'search', isRequired: false }],
     });
   }
 
   return {
-    id         : IPTV_ID,
+    id         : ADDON_ID,
     version,
-    name       : settings.addonName || IPTV_NAME,
+    name       : settings.addonName || ADDON_NAME,
     description: [
-      settings.addonName || IPTV_NAME,
-      streams.length ? `${streams.length.toLocaleString()} channels` : 'Add sources in configurator',
-      groups.length  ? `${groups.length} groups` : '',
+      settings.addonName || ADDON_NAME,
+      streams.length  ? `${streams.length.toLocaleString()} channels` : 'Open configurator to add sources',
+      groups.length   ? `${groups.length} groups`                    : '',
       'HLS · DASH · DRM · Samsung Tizen',
     ].filter(Boolean).join(' · '),
-    logo: `${PUBLIC_URL}/logo.png`,
-    resources: [
+    logo       : `${PUBLIC_URL}/logo.png`,
+    resources  : [
       { name: 'catalog', types: ['tv'], idPrefixes: ['jash'] },
       { name: 'meta',    types: ['tv'], idPrefixes: ['jash'] },
       { name: 'stream',  types: ['tv'], idPrefixes: ['jash'] },
     ],
-    types      : ['tv'],
-    idPrefixes : ['jash'],
+    types        : ['tv'],
+    idPrefixes   : ['jash'],
     catalogs,
-    behaviorHints: { adult: false, p2p: false, configurable: true, configurationRequired: false },
+    behaviorHints: {
+      adult               : false,
+      p2p                 : false,
+      configurable        : true,
+      configurationRequired: false,
+    },
     configurationURL: `${PUBLIC_URL}/`,
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  MOVIE MANIFEST  (no 4K/UHD category — only All Movies, HD, Top Rated, By Year)
+// ██  CATALOG HANDLER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function buildMovieManifest() {
-  const settings    = getMovieSettings();
-  const streams     = getEnabledMovies();
-  const allMovies   = groupMovies(streams);
-  const movieSrcs   = getMovieSources(streams);
-  const version     = getVersion(MOV_FILE);
-
-  const allGenres   = [...new Set(streams.flatMap(s => s.genres || []).filter(Boolean))].sort().slice(0, 30);
-  const allYears    = [...new Set(streams.map(s => s.year).filter(y => y && y > 1900))].sort((a, b) => b - a).slice(0, 30);
-
-  const defaultGenres = ['Action','Drama','Comedy','Thriller','Horror','Sci-Fi','Romance','Animation','Documentary'];
-  const genreOptions  = allGenres.length ? allGenres : defaultGenres;
-  const yearOptions   = allYears.length  ? allYears.map(String) : [];
-
-  // ── Fixed catalogs ────────────────────────────────────────────────────────
-  const catalogs = [
-    {
-      type: 'movie', id: 'jmov_all', name: settings.addonName || MOVIE_NAME,
-      extra: [
-        { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: genreOptions },
-        { name: 'skip',   isRequired: false },
-      ],
-    },
-    {
-      type: 'movie', id: 'jmov_hd', name: '🎬 HD Movies',
-      extra: [
-        { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: genreOptions },
-        { name: 'skip',   isRequired: false },
-      ],
-    },
-    {
-      type: 'movie', id: 'jmov_top', name: '⭐ Top Rated',
-      extra: [
-        { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: genreOptions },
-        { name: 'skip',   isRequired: false },
-      ],
-    },
-  ];
-
-  if (yearOptions.length > 0) {
-    catalogs.push({
-      type: 'movie', id: 'jmov_year', name: '📅 By Year',
-      extra: [
-        { name: 'genre',  isRequired: false, options: yearOptions },
-        { name: 'search', isRequired: false },
-        { name: 'skip',   isRequired: false },
-      ],
-    });
-  }
-
-  // ── Per-source catalogs (each source = separate catalog) ──────────────────
-  movieSrcs.forEach((src, i) => {
-    const safeId = `jmov_src_${i}`;
-    catalogs.push({
-      type: 'movie', id: safeId, name: `📂 ${src.name}`,
-      extra: [
-        { name: 'search', isRequired: false },
-        { name: 'genre',  isRequired: false, options: genreOptions },
-        { name: 'skip',   isRequired: false },
-      ],
-    });
-  });
-
-  return {
-    id         : MOVIE_ID,
-    version,
-    name       : settings.addonName || MOVIE_NAME,
-    description: [
-      settings.addonName || MOVIE_NAME,
-      allMovies.length ? `${allMovies.length} movies`  : 'Add movie sources in configurator',
-      streams.length   ? `${streams.length} streams`   : '',
-      movieSrcs.length ? `${movieSrcs.length} sources` : '',
-      'TMDB · HD · DRM',
-    ].filter(Boolean).join(' · '),
-    logo: `${PUBLIC_URL}/movie-logo.png`,
-    resources: [
-      { name: 'catalog', types: ['movie'], idPrefixes: ['jmov'] },
-      { name: 'meta',    types: ['movie'], idPrefixes: ['jmov'] },
-      { name: 'stream',  types: ['movie'], idPrefixes: ['jmov'] },
-    ],
-    types      : ['movie'],
-    idPrefixes : ['jmov'],
-    catalogs,
-    behaviorHints: { adult: false, p2p: false, configurable: true, configurationRequired: false },
-    configurationURL: `${PUBLIC_URL}/`,
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ██  IPTV CATALOG HANDLER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function handleIptvCatalog(catId, extra) {
+function handleCatalog(catId, extra) {
   const streams  = getEnabledStreams();
-  const groups   = getIptvGroups();
-  const settings = getIptvSettings();
+  const groups   = getGroups();
+  const settings = getSettings();
   const search   = (extra.search || '').toLowerCase().trim();
   const genre    = (extra.genre  || '').trim();
   const skip     = parseInt(extra.skip || '0', 10) || 0;
   const PAGE     = 100;
 
+  // ── ⭐ Best Streams catalog ────────────────────────────────────────────────
   if (catId === 'jash_best') {
     let list = buildAutoCombined(streams);
     if (search) list = list.filter(c => c.name.toLowerCase().includes(search));
@@ -543,17 +270,23 @@ function handleIptvCatalog(catId, extra) {
     const metas = list.slice(skip, skip + PAGE).map(c => {
       const logo = c.streams.find(s => s.logo)?.logo || null;
       return {
-        id: `jashauto${encodeId(c.key)}`, type: 'tv', name: c.name,
-        poster: logo, background: logo, logo,
-        description: `${c.sourceCount} sources · ${c.streams.length} streams`,
-        genres: [...new Set(c.streams.map(s => s.group).filter(Boolean))],
+        id         : `jashauto${encodeId(c.key)}`,
+        type       : 'tv',
+        name       : c.name,
+        poster     : logo,
+        background : logo,
+        logo,
+        description: `${c.sourceCount} sources · ${c.streams.length} streams available`,
+        genres     : [...new Set(c.streams.map(s => s.group).filter(Boolean))],
       };
     });
     return { metas };
   }
 
+  // ── Placeholder catalog ───────────────────────────────────────────────────
   if (catId === 'jash_cat_default') return { metas: [] };
 
+  // ── Per-group catalog ─────────────────────────────────────────────────────
   const m = catId.match(/^jash_cat_(\d+)$/);
   if (!m) return { metas: [] };
   const group = groups[parseInt(m[1], 10)];
@@ -563,8 +296,9 @@ function handleIptvCatalog(catId, extra) {
   if (search) list = list.filter(s => s.name.toLowerCase().includes(search));
   if (genre)  list = list.filter(s => s.group === genre);
 
-  const combined = settings.combineMultiQuality !== false;
-  const seen = new Map();
+  // Combine same-name channels (multi-quality) into one entry
+  const combined  = settings.combineMultiQuality !== false;
+  const seen      = new Map();
   for (const s of list) {
     const key = combined ? s.name.toLowerCase().trim() : s.id;
     if (!seen.has(key)) seen.set(key, { rep: s, all: [] });
@@ -572,9 +306,15 @@ function handleIptvCatalog(catId, extra) {
   }
 
   const metas = [...seen.values()].slice(skip, skip + PAGE).map(({ rep, all }) => ({
-    id: `jash${encodeId(rep.url)}`, type: 'tv', name: rep.name,
-    poster: rep.logo || null, background: rep.logo || null, logo: rep.logo || null,
-    description: all.length > 1 ? `${group.name} · ${all.length} quality options` : group.name,
+    id         : `jash${encodeId(rep.url)}`,
+    type       : 'tv',
+    name       : rep.name,
+    poster     : rep.logo || null,
+    background : rep.logo || null,
+    logo       : rep.logo || null,
+    description: all.length > 1
+      ? `${group.name} · ${all.length} quality options`
+      : group.name,
     genres: [group.name],
   }));
 
@@ -582,274 +322,129 @@ function handleIptvCatalog(catId, extra) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  MOVIE CATALOG HANDLER
+// ██  META HANDLER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function handleMovieCatalog(catId, extra) {
-  const allStreams = getEnabledMovies();
-  const search    = (extra.search || '').toLowerCase().trim();
-  const genre     = (extra.genre  || '').trim();
-  const skip      = parseInt(extra.skip || '0', 10) || 0;
-  const PAGE      = 100;
-
-  // ── Per-source catalog (jmov_src_N) ────────────────────────────────────
-  const srcMatch = catId.match(/^jmov_src_(\d+)$/);
-  if (srcMatch) {
-    const srcIdx  = parseInt(srcMatch[1]);
-    const sources = getMovieSources(allStreams);
-    const src     = sources[srcIdx];
-    if (!src) return { metas: [] };
-    let groups = groupMovies(allStreams, src.name);
-    if (search) groups = groups.filter(g => (g.title||'').toLowerCase().includes(search));
-    if (genre)  groups = groups.filter(g => (g.genres||[]).some(gn => gn.toLowerCase().includes(genre.toLowerCase())));
-    const page  = groups.slice(skip, skip + PAGE);
-    return { metas: page.map(g => buildMovieMeta(g)) };
-  }
-
-  // ── All movies ────────────────────────────────────────────────────────────
-  let groups = groupMovies(allStreams);
-
-  if (catId === 'jmov_hd') {
-    groups = groups.filter(g => g.streams.some(s =>
-      s.quality === '1080p' || s.quality === 'FHD' || s.quality === '720p' || s.quality === 'HD'
-    ));
-  } else if (catId === 'jmov_top') {
-    groups = groups.filter(g => (g.rating || 0) >= 7.0)
-      .sort((a, b) => (b.rating||0) - (a.rating||0));
-  } else if (catId === 'jmov_year') {
-    // In Stremio, "genre" param is reused as year filter for jmov_year
-    if (genre) groups = groups.filter(g => String(g.year) === genre);
-  }
-
-  // Genre filter (skip for year catalog — genre param is used as year there)
-  if (genre && catId !== 'jmov_year') {
-    groups = groups.filter(g =>
-      (g.genres||[]).some(gn => gn.toLowerCase().includes(genre.toLowerCase())) ||
-      g.streams.some(s => (s.group||'').toLowerCase().includes(genre.toLowerCase()))
-    );
-  }
-
-  if (search) groups = groups.filter(g => (g.title||'').toLowerCase().includes(search));
-
-  const page = groups.slice(skip, skip + PAGE);
-  debug(`[MOVIE-CAT] ${catId} → ${page.length}/${groups.length} (skip=${skip})`);
-  return { metas: page.map(g => buildMovieMeta(g)) };
-}
-
-function buildMovieMeta(g) {
-  const qualities = [...new Set(g.streams.map(s => s.quality).filter(Boolean))];
-  const qualStr   = qualities.slice(0, 4).join(' · ');
-  return {
-    id         : `jmov${encodeId(g.key)}`,
-    type       : 'movie',
-    name       : g.title,
-    year       : g.year,
-    poster     : g.poster    || null,
-    background : g.backdrop  || g.poster || null,
-    logo       : g.poster    || null,
-    description: [
-      g.overview,
-      qualStr ? `Quality: ${qualStr}` : null,
-      g.streams.length > 1 ? `${g.streams.length} stream options` : null,
-      g.sourceGroup ? `Source: ${g.sourceGroup}` : null,
-    ].filter(Boolean).join('\n\n') || null,
-    imdbRating : g.rating  ? String(g.rating.toFixed(1))  : null,
-    genres     : g.genres  || [],
-    releaseInfo: g.year    ? String(g.year) : null,
-    runtime    : g.runtime ? `${g.runtime} min` : null,
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ██  MOVIE META HANDLER  (with on-demand TMDB fetch if missing)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-async function handleMovieMeta(rawId) {
+function handleMeta(rawId) {
   let id = rawId;
   try { id = decodeURIComponent(rawId); } catch { /* ok */ }
 
-  const streams = getEnabledMovies();
-  const groups  = groupMovies(streams);
-  const key     = decodeId(id.replace(/^jmov/, ''));
-  let g         = groups.find(x => x.key === key);
-  if (!g) return { meta: null };
-
-  // On-demand TMDB fetch if metadata missing
-  if (!g.tmdbId) {
-    const tmdbKey = getMovieSettings().tmdbApiKey;
-    if (tmdbKey) {
-      const meta = await fetchTmdbMeta(g.title, g.year, tmdbKey);
-      if (meta) Object.assign(g, meta);
-    }
-  }
-
-  const qualities = [...new Set(g.streams.map(s => s.quality).filter(Boolean))];
-  const base      = buildMovieMeta(g);
-  return {
-    meta: {
-      ...base, id,
-      description: [
-        g.overview,
-        qualities.length ? `Available in: ${qualities.join(', ')}` : null,
-        g.streams.length > 1 ? `${g.streams.length} stream sources` : null,
-      ].filter(Boolean).join('\n\n') || null,
-      imdbId: g.imdbId || null,
-    },
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ██  MOVIE STREAM HANDLER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-async function handleMovieStream(rawId) {
-  let id = rawId;
-  try { id = decodeURIComponent(rawId); } catch { /* ok */ }
-
-  const streams = getEnabledMovies();
-  const groups  = groupMovies(streams);
-  const key     = decodeId(id.replace(/^jmov/, ''));
-  const g       = groups.find(x => x.key === key);
-  if (!g) return { streams: [] };
-
-  log(`[MOVIE-STREAM] "${g.title}" → ${g.streams.length} variant(s)`);
-
-  // Sort by quality (best first)
-  const sorted = [...g.streams].sort((a, b) => (Q_RANK[b.quality || ''] || 0) - (Q_RANK[a.quality || ''] || 0));
-
-  const results = [];
-  for (let i = 0; i < sorted.length; i++) {
-    const s     = sorted[i];
-    const qual  = s.quality || `Stream ${i + 1}`;
-    const isDRM = hasDRM(s);
-    const type  = detectType(s);
-    let resolved = s.url;
-
-    try {
-      if (!isDRM && type === 'hls') {
-        const cached = getCached(s.url);
-        if (cached) { resolved = cached; }
-        else {
-          const extracted = await extractHLS(s.url, s);
-          if (extracted && extracted !== s.url) { setCache(s.url, extracted); resolved = extracted; }
-        }
-      }
-    } catch(e) { err(`[MOVIE-STREAM] extract: ${e.message}`); }
-
-    const headers = buildHeaders(s);
-    let title = `🎬 ${qual}`;
-    if (isDRM)           title += ` [🔐 ${(s.licenseType || 'DRM').toUpperCase()}]`;
-    if (type === 'dash') title += ' [DASH]';
-
-    const entry = {
-      url: resolved, name: g.title, title,
-      behaviorHints: { notWebReady: true, proxyHeaders: { request: headers } },
-    };
-    if (isDRM && s.licenseKey) {
-      entry.description = `DRM:${s.licenseType} | Key:${s.licenseKey.substring(0, 40)}`;
-    }
-    results.push(entry);
-  }
-
-  return { streams: results };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ██  IPTV META HANDLER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function handleIptvMeta(rawId) {
-  let id = rawId;
-  try { id = decodeURIComponent(rawId); } catch { /* ok */ }
   const streams  = getEnabledStreams();
-  const settings = getIptvSettings();
-  const name     = settings.addonName || IPTV_NAME;
+  const settings = getSettings();
+  const name     = settings.addonName || ADDON_NAME;
 
+  // Auto-combined channel
   if (id.startsWith('jashauto')) {
     const key  = decodeId(id.replace('jashauto', ''));
     const auto = buildAutoCombined(streams);
     const c    = auto.find(x => x.key === key);
     if (!c) return { meta: null };
     const logo = c.streams.find(s => s.logo)?.logo || null;
-    return { meta: {
-      id, type: 'tv', name: c.name, poster: logo, logo,
-      description: `${c.sourceCount} sources · ${c.streams.length} streams · ${name}`,
-      genres: [...new Set(c.streams.map(s => s.group).filter(Boolean))],
-      releaseInfo: 'LIVE',
-    }};
+    return {
+      meta: {
+        id, type: 'tv', name: c.name,
+        poster     : logo,
+        logo,
+        description: `${c.sourceCount} sources · ${c.streams.length} streams · ${name}`,
+        genres     : [...new Set(c.streams.map(s => s.group).filter(Boolean))],
+        releaseInfo: 'LIVE',
+      },
+    };
   }
 
+  // Single channel
   const url = decodeId(id.replace(/^jash/, ''));
   if (!url) return { meta: null };
   const s = streams.find(x => x.url === url);
   if (!s) return { meta: null };
-  return { meta: {
-    id, type: 'tv', name: s.name,
-    poster: s.logo || null, background: s.logo || null, logo: s.logo || null,
-    description: `${s.group || 'Uncategorized'} · ${name}`,
-    genres: [s.group || 'Uncategorized'],
-    releaseInfo: 'LIVE',
-  }};
+  return {
+    meta: {
+      id, type: 'tv', name: s.name,
+      poster     : s.logo || null,
+      background : s.logo || null,
+      logo       : s.logo || null,
+      description: `${s.group || 'Uncategorized'} · ${name}`,
+      genres     : [s.group || 'Uncategorized'],
+      releaseInfo: 'LIVE',
+    },
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  IPTV STREAM HANDLER
+// ██  STREAM HANDLER  (with HLS extraction + DRM passthrough + DASH passthrough)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function handleIptvStream(rawId) {
+async function handleStream(rawId) {
   let id = rawId;
   try { id = decodeURIComponent(rawId); } catch { /* ok */ }
-  const streams  = getEnabledStreams();
-  const settings = getIptvSettings();
-  const name     = settings.addonName || IPTV_NAME;
-  debug(`[IPTV-STREAM] id=${id.slice(0, 80)}`);
 
+  const streams  = getEnabledStreams();
+  const settings = getSettings();
+  const name     = settings.addonName || ADDON_NAME;
+  debug(`[STREAM] id=${id.slice(0, 80)}`);
+
+  // ── Auto-combined channel ──────────────────────────────────────────────────
   if (id.startsWith('jashauto')) {
     const key  = decodeId(id.replace('jashauto', ''));
     const auto = buildAutoCombined(streams);
     const c    = auto.find(x => x.key === key);
     if (!c) return { streams: [] };
-    log(`[IPTV-STREAM] auto-combined "${c.name}" → ${c.streams.length} streams`);
-    return resolveIptvVariants(c.streams, name, settings);
+    log(`[STREAM] auto-combined "${c.name}" → ${c.streams.length} streams`);
+    return resolveVariants(c.streams, name, settings);
   }
 
+  // ── Single / multi-quality channel ────────────────────────────────────────
   if (!id.startsWith('jash')) return { streams: [] };
   const url     = decodeId(id.replace(/^jash/, ''));
   if (!url) return { streams: [] };
   const primary = streams.find(s => s.url === url);
-  if (!primary) return resolveIptvVariants([{ url, name: 'Live' }], name, settings);
 
+  if (!primary) {
+    // Fallback: stream URL not found in config, try direct playback
+    return resolveVariants([{ url, name: 'Live', group: '' }], name, settings);
+  }
+
+  // Gather all quality variants for this channel
   const variants = settings.combineMultiQuality !== false
     ? streams.filter(s =>
         s.name.toLowerCase().trim() === primary.name.toLowerCase().trim() &&
         (s.group || '') === (primary.group || ''))
     : [primary];
 
-  log(`[IPTV-STREAM] "${primary.name}" → ${variants.length} variant(s)`);
-  return resolveIptvVariants(variants, name, settings);
+  log(`[STREAM] "${primary.name}" → ${variants.length} variant(s)`);
+  return resolveVariants(variants, name, settings);
 }
 
-async function resolveIptvVariants(variants, addonName, settings) {
+async function resolveVariants(variants, addonName, settings) {
   const results = [];
   for (let i = 0; i < variants.length; i++) {
-    const s     = variants[i];
-    const type  = detectType(s);
-    const isDRM = hasDRM(s);
-    const label = variants.length > 1
+    const s      = variants[i];
+    const type   = detectType(s);
+    const isDRM  = hasDRM(s);
+    const label  = variants.length > 1
       ? `[${i + 1}/${variants.length}] ${s.name || 'Stream'}`
       : (s.name || 'Live');
+
     let resolved = s.url;
 
-    try {
-      if (!isDRM && type === 'hls') {
+    // ── HLS extraction (not DRM, not DASH) ──────────────────────────────────
+    if (!isDRM && type === 'hls') {
+      try {
         const cached = getCached(s.url);
-        if (cached) { resolved = cached; debug(`[RESOLVE] ⚡ cached`); }
-        else {
+        if (cached) {
+          resolved = cached;
+          debug(`[RESOLVE] ⚡ cache hit`);
+        } else {
           const extracted = await extractHLS(s.url, s);
-          if (extracted && extracted !== s.url) { setCache(s.url, extracted); resolved = extracted; }
+          if (extracted && extracted !== s.url) {
+            setCache(s.url, extracted);
+            resolved = extracted;
+          }
         }
-      }
-    } catch(e) { err(`[RESOLVE] ${e.message}`); }
+      } catch(e) { err(`[RESOLVE] HLS extraction: ${e.message}`); }
+    }
+    // ── DASH / DRM → pass through with headers ─────────────────────────────
+    // (no extraction — Stremio handles MPD parsing + DRM via proxyHeaders)
 
     const headers = buildHeaders(s);
     let title = `🔴 ${label}`;
@@ -857,20 +452,29 @@ async function resolveIptvVariants(variants, addonName, settings) {
     if (type === 'dash') title += ` [DASH]`;
 
     const entry = {
-      url: resolved, name: addonName, title,
-      behaviorHints: { notWebReady: true, proxyHeaders: { request: headers } },
+      url  : resolved,
+      name : addonName,
+      title,
+      behaviorHints: {
+        notWebReady  : true,
+        proxyHeaders : { request: headers },
+      },
     };
-    if (isDRM && s.licenseKey) entry.description = `DRM:${s.licenseType} | Key:${s.licenseKey.substring(0, 40)}`;
+
+    // DRM key info in description (so Stremio/player can pick it up)
+    if (isDRM && s.licenseKey) {
+      entry.description = `DRM: ${s.licenseType} | Key: ${s.licenseKey.substring(0, 60)}`;
+    }
+
     results.push(entry);
   }
   return { streams: results };
 }
 
 function buildHeaders(s) {
-  const h = {
-    'User-Agent': s.userAgent ||
-      'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36',
-  };
+  const ua = s.userAgent ||
+    'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36';
+  const h = { 'User-Agent': ua };
   if (s.cookie)      h['Cookie']  = s.cookie;
   if (s.referer)     h['Referer'] = s.referer;
   if (s.httpHeaders) Object.entries(s.httpHeaders).forEach(([k, v]) => { if (!h[k]) h[k] = v; });
@@ -878,7 +482,8 @@ function buildHeaders(s) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  HLS EXTRACTION — Samsung Tizen fix (exact algorithm)
+// ██  HLS EXTRACTION — Samsung Tizen fix
+//     Fetches master playlist → picks middle quality variant for stability
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function extractHLS(playlistUrl, streamMeta) {
@@ -894,8 +499,10 @@ async function extractHLS(playlistUrl, streamMeta) {
   catch(e) { log(`[HLS] fetch failed: ${e.message}`); return null; }
 
   if (!content.includes('#EXTM3U') && !content.includes('#EXT-X-')) {
-    debug('[HLS] not M3U8'); return null;
+    debug('[HLS] response is not M3U8');
+    return null;
   }
+
   return extractRealStreamUrl(content, playlistUrl);
 }
 
@@ -905,10 +512,11 @@ function extractRealStreamUrl(content, baseUrl) {
     const isMaster = lines.some(l => l.includes('#EXT-X-STREAM-INF'));
 
     if (isMaster) {
+      // ── Master playlist: extract all variants ──────────────────────────────
       const variants = [];
       for (let i = 0; i < lines.length; i++) {
         if (!lines[i].includes('#EXT-X-STREAM-INF')) continue;
-        const bw  = (lines[i].match(/BANDWIDTH=(\d+)/)   || [])[1];
+        const bw  = (lines[i].match(/BANDWIDTH=(\d+)/)    || [])[1];
         const res = (lines[i].match(/RESOLUTION=(\d+x\d+)/) || [])[1];
         for (let j = i + 1; j < lines.length; j++) {
           if (!lines[j].startsWith('#')) {
@@ -918,21 +526,36 @@ function extractRealStreamUrl(content, baseUrl) {
         }
       }
       if (!variants.length) return null;
+
+      // Sort highest → lowest bandwidth
       variants.sort((a, b) => b.bw - a.bw);
-      // Pick middle quality for Samsung TV stability
+
+      // ★ Pick MIDDLE quality — best Samsung TV stability (not too high, not too low)
       const idx      = Math.floor(variants.length / 2);
       const selected = variants[idx];
       debug(`[EXTRACT] ${variants.length} variants → [${idx}] ${selected.res} @${selected.bw}bps`);
+
       let vUrl = selected.url;
-      if (!vUrl.startsWith('http')) vUrl = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1) + vUrl;
+      if (!vUrl.startsWith('http')) {
+        vUrl = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1) + vUrl;
+      }
       return vUrl;
+
     } else {
-      // Media playlist — find first segment
+      // ── Media playlist: find first segment URL ────────────────────────────
       for (const line of lines) {
         if (line.startsWith('#')) continue;
-        if (line.includes('.ts') || line.includes('.m4s') || line.includes('.m3u8') || line.includes('.mp4')) {
+        if (
+          line.includes('.ts')   ||
+          line.includes('.m4s')  ||
+          line.includes('.m3u8') ||
+          line.includes('.mp4')
+        ) {
           let segUrl = line;
-          if (!segUrl.startsWith('http')) segUrl = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1) + line;
+          if (!segUrl.startsWith('http')) {
+            segUrl = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1) + line;
+          }
+          debug(`[EXTRACT] segment: ${segUrl.slice(0, 60)}…`);
           return segUrl;
         }
       }
@@ -942,7 +565,7 @@ function extractRealStreamUrl(content, baseUrl) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  HTTP FETCH (with redirect support)
+// ██  HTTP FETCH  (with redirect support + Samsung UA)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function fetchUrl(url, customHeaders, redirects) {
@@ -951,9 +574,12 @@ function fetchUrl(url, customHeaders, redirects) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('Too many redirects'));
     let parsed;
-    try { parsed = new urlMod.URL(url); } catch { return reject(new Error('Invalid URL: ' + url)); }
+    try { parsed = new urlMod.URL(url); }
+    catch { return reject(new Error('Invalid URL: ' + url)); }
+
     const lib   = parsed.protocol === 'https:' ? https : http;
-    const timer = setTimeout(() => reject(new Error('Timeout')), REQ_TIMEOUT);
+    const timer = setTimeout(() => reject(new Error('Request timeout')), REQ_TIMEOUT);
+
     const reqHeaders = {
       'User-Agent': customHeaders['User-Agent'] ||
         'Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36',
@@ -962,6 +588,7 @@ function fetchUrl(url, customHeaders, redirects) {
       ...customHeaders,
     };
     if (!reqHeaders['Referer']) reqHeaders['Referer'] = `${parsed.protocol}//${parsed.hostname}`;
+
     const req = lib.get({
       hostname: parsed.hostname,
       port    : parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
@@ -969,16 +596,19 @@ function fetchUrl(url, customHeaders, redirects) {
       headers : reqHeaders,
     }, res => {
       clearTimeout(timer);
+      // Follow redirects
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         const redir = new urlMod.URL(res.headers.location, url).href;
         fetchUrl(redir, customHeaders, redirects + 1).then(resolve).catch(reject);
         return;
       }
-      if (res.statusCode < 200 || res.statusCode >= 400) return reject(new Error(`HTTP ${res.statusCode}`));
+      if (res.statusCode < 200 || res.statusCode >= 400) {
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
       let data = '';
       res.setEncoding('utf8');
-      res.on('data', c => { data += c; });
-      res.on('end',  () => resolve(data));
+      res.on('data',  c => { data += c; });
+      res.on('end',   () => resolve(data));
       res.on('error', reject);
     });
     req.on('error', e => { clearTimeout(timer); reject(e); });
@@ -990,7 +620,7 @@ function fetchUrl(url, customHeaders, redirects) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function generateM3U(streams, playlistName) {
-  const lines = [`#EXTM3U x-playlist-name="${playlistName || IPTV_NAME}"`];
+  const lines = [`#EXTM3U x-playlist-name="${playlistName || ADDON_NAME}"`];
   for (const s of streams) {
     const parts = ['#EXTINF:-1'];
     if (s.tvgId) parts.push(`tvg-id="${s.tvgId}"`);
@@ -1011,7 +641,7 @@ function generateM3U(streams, playlistName) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  HTTP HELPERS
+// ██  HTTP RESPONSE HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function cors(res) {
@@ -1022,7 +652,7 @@ function cors(res) {
 }
 function noCache(res) {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Pragma',  'no-cache');
   res.setHeader('Expires', '0');
 }
 function json(res, data, code) {
@@ -1036,7 +666,8 @@ function json(res, data, code) {
   res.end(body);
 }
 function serveFile(res, filePath) {
-  if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('404'); }
+  if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('404 Not Found'); }
+  const ext  = path.extname(filePath).toLowerCase();
   const mime = {
     '.html': 'text/html; charset=utf-8',
     '.js'  : 'application/javascript',
@@ -1050,11 +681,11 @@ function serveFile(res, filePath) {
     '.woff2': 'font/woff2',
     '.webp': 'image/webp',
     '.txt' : 'text/plain',
-  }[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+  }[ext] || 'application/octet-stream';
   const content = fs.readFileSync(filePath);
   res.writeHead(200, {
-    'Content-Type'  : mime,
-    'Cache-Control' : mime.includes('html') ? 'no-cache' : 'public, max-age=3600',
+    'Content-Type' : mime,
+    'Cache-Control': mime.includes('html') ? 'no-cache' : 'public, max-age=3600',
   });
   res.end(content);
 }
@@ -1070,128 +701,107 @@ function parseExtra(str) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  INSTALL PAGE HTML
+// ██  INSTALL PAGE  (shown when dist/ not built yet or at /install)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function installPage() {
-  const iptvM  = buildIptvManifest();
-  const movieM = buildMovieManifest();
-  const iptvS  = getEnabledStreams().length;
-  const movieS = groupMovies(getEnabledMovies()).length;
-  const host   = PUBLIC_URL.replace(/^https?:\/\//, '');
-  const hasTmdb = !!TMDB_KEY;
+  const manifest = buildManifest();
+  const streams  = getEnabledStreams();
+  const groups   = getGroups();
+  const autoComb = buildAutoCombined(streams);
+  const host     = PUBLIC_URL.replace(/^https?:\/\//, '');
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Jash Addon — Ready to Install</title>
+  <title>Jash IPTV Addon — Install</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:#0f172a;color:#e2e8f0;font-family:'Segoe UI',Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
-    .wrap{max-width:720px;width:100%}
+    .wrap{max-width:680px;width:100%}
     .card{background:#1e293b;border:1px solid #334155;border-radius:1.5rem;padding:2rem;margin-bottom:1.5rem;box-shadow:0 25px 50px rgba(0,0,0,.5)}
     h1{color:#a78bfa;font-size:2rem;font-weight:800;text-align:center;margin-bottom:.25rem}
     .sub{color:#64748b;text-align:center;font-size:.9rem;margin-bottom:1.5rem}
-    .row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
-    .addon-card{background:#0f172a;border-radius:1rem;padding:1.5rem;border:1px solid #334155}
-    .addon-card h2{font-size:1rem;font-weight:700;margin-bottom:.75rem}
-    .iptv-card{border-color:#4f46e522} .iptv-card h2{color:#818cf8}
-    .movie-card{border-color:#d9770622} .movie-card h2{color:#fb923c}
-    .url-box{background:#0f172a;border:1px solid #1e293b;border-radius:.5rem;padding:.75rem;font-family:monospace;font-size:.75rem;word-break:break-all;margin-bottom:.75rem}
-    .url-box .lbl{color:#64748b;font-size:.65rem;display:block;margin-bottom:.25rem}
-    .url-box .val{color:#818cf8}
-    .btn{display:flex;align-items:center;justify-content:center;gap:.5rem;width:100%;padding:.75rem 1rem;border-radius:.75rem;font-weight:700;font-size:.85rem;cursor:pointer;text-decoration:none;border:none;margin-bottom:.5rem;transition:all .15s}
-    .btn-iptv{background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff}
-    .btn-movie{background:linear-gradient(135deg,#ea580c,#d97706);color:#fff}
-    .btn-sm{background:#1e293b;border:1px solid #475569;color:#cbd5e1;font-size:.8rem;padding:.5rem .75rem;border-radius:.5rem;text-decoration:none;display:inline-flex;align-items:center;gap:.4rem;margin-right:.5rem;margin-bottom:.5rem}
-    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;margin-bottom:1rem}
+    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;margin-bottom:1.5rem}
     .stat{background:#0f172a;border:1px solid #1e293b;border-radius:.75rem;padding:.75rem;text-align:center}
     .stat .val{font-size:1.5rem;font-weight:800;color:#a78bfa}
     .stat .lbl{font-size:.65rem;color:#64748b;margin-top:.2rem}
+    .url-box{background:#0f172a;border:1px solid #334155;border-radius:.75rem;padding:1rem;margin-bottom:1rem}
+    .url-box .lbl{color:#64748b;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.4rem}
+    .url-box .val{color:#818cf8;font-family:monospace;font-size:.8rem;word-break:break-all}
+    .btn{display:flex;align-items:center;justify-content:center;gap:.5rem;width:100%;padding:.875rem 1rem;border-radius:.875rem;font-weight:700;font-size:.95rem;cursor:pointer;text-decoration:none;border:none;margin-bottom:.75rem;transition:all .15s}
+    .btn-primary{background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff}
+    .btn-secondary{background:linear-gradient(135deg,#1e40af,#1d4ed8);color:#fff}
+    .btn-sm{background:#1e293b;border:1px solid #475569;color:#cbd5e1;font-size:.8rem;padding:.5rem .875rem;border-radius:.5rem;text-decoration:none;display:inline-flex;align-items:center;gap:.4rem;margin-right:.5rem;margin-bottom:.5rem}
     .step{display:flex;gap:.75rem;margin-bottom:.75rem;align-items:flex-start}
-    .step-n{background:#7c3aed22;border:1px solid #7c3aed55;color:#a78bfa;width:1.75rem;height:1.75rem;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;flex-shrink:0}
-    .step-t{color:#94a3b8;font-size:.85rem;padding-top:.2rem} .step-t strong{color:#e2e8f0}
-    .env-box{background:#0f172a;border:1px solid #334155;border-radius:.75rem;padding:1rem;margin-top:.75rem;font-size:.8rem}
-    .env-box code{background:#1e293b;padding:.15rem .4rem;border-radius:.3rem;font-family:monospace;color:#a78bfa}
-    footer{text-align:center;color:#475569;font-size:.75rem;padding-top:1rem}
+    .step-n{background:#7c3aed22;border:1px solid #7c3aed55;color:#a78bfa;width:1.75rem;height:1.75rem;min-width:1.75rem;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700}
+    .step-t{color:#94a3b8;font-size:.85rem;padding-top:.25rem} .step-t strong{color:#e2e8f0}
     .badge{display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .6rem;border-radius:9999px;font-size:.7rem;font-weight:700}
     .badge-green{background:#14532d;color:#4ade80}
-    .badge-orange{background:#7c2d12;color:#fb923c}
-    @media(max-width:560px){.row{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
+    .section-title{color:#94a3b8;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.75rem}
+    footer{text-align:center;color:#475569;font-size:.75rem;padding-top:1rem}
+    @media(max-width:480px){.stats{grid-template-columns:repeat(2,1fr)}}
   </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
     <div style="font-size:3.5rem;text-align:center;margin-bottom:.75rem">📡</div>
-    <h1>Jash Addon</h1>
-    <p class="sub">IPTV + Movies · HLS/DASH/DRM · Samsung Tizen · TMDB ${hasTmdb ? '<span class="badge badge-green">✓ TMDB Key Set</span>' : '<span class="badge badge-orange">⚠ Set TMDB_API_KEY env var</span>'}</p>
+    <h1>Jash IPTV Addon</h1>
+    <p class="sub">HLS · DASH · DRM · Samsung Tizen Optimized <span class="badge badge-green">● LIVE</span></p>
 
     <div class="stats">
-      <div class="stat"><div class="val">${iptvS.toLocaleString()}</div><div class="lbl">IPTV Channels</div></div>
-      <div class="stat"><div class="val">${iptvM.catalogs.length}</div><div class="lbl">IPTV Groups</div></div>
-      <div class="stat"><div class="val">${movieS.toLocaleString()}</div><div class="lbl">Movies</div></div>
-      <div class="stat"><div class="val">v${iptvM.version}</div><div class="lbl">Version</div></div>
+      <div class="stat"><div class="val">${streams.length.toLocaleString()}</div><div class="lbl">Channels</div></div>
+      <div class="stat"><div class="val">${groups.length}</div><div class="lbl">Groups</div></div>
+      <div class="stat"><div class="val">${autoComb.length}</div><div class="lbl">Auto-Combined</div></div>
+      <div class="stat"><div class="val">v${manifest.version}</div><div class="lbl">Version</div></div>
     </div>
 
-    <div class="row">
-      <div class="addon-card iptv-card">
-        <h2>📺 IPTV Addon</h2>
-        <div class="url-box">
-          <span class="lbl">Manifest URL</span>
-          <span class="val">${PUBLIC_URL}/manifest.json</span>
-        </div>
-        <a href="stremio://${host}/manifest.json" class="btn btn-iptv">📺 Install IPTV in Stremio</a>
-        <a href="https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/manifest.json`)}" class="btn-sm" target="_blank">🌐 Web</a>
-        <a href="/manifest.json" class="btn-sm" target="_blank">📋 Manifest</a>
-      </div>
-
-      <div class="addon-card movie-card">
-        <h2>🎬 Movie Addon</h2>
-        <div class="url-box">
-          <span class="lbl">Manifest URL</span>
-          <span class="val">${PUBLIC_URL}/movie/manifest.json</span>
-        </div>
-        <a href="stremio://${host}/movie/manifest.json" class="btn btn-movie">🎬 Install Movies in Stremio</a>
-        <a href="https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/movie/manifest.json`)}" class="btn-sm" target="_blank">🌐 Web</a>
-        <a href="/movie/manifest.json" class="btn-sm" target="_blank">📋 Manifest</a>
-      </div>
+    <div class="url-box">
+      <div class="lbl">📋 Manifest URL (paste in Stremio)</div>
+      <div class="val">${PUBLIC_URL}/manifest.json</div>
     </div>
 
-    <div style="margin-bottom:1rem">
-      <div style="color:#94a3b8;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.75rem">📻 M3U Playlists (Tivimate · OTT Navigator · VLC)</div>
+    <a href="stremio://${host}/manifest.json" class="btn btn-primary">
+      📺 Install in Stremio App
+    </a>
+    <a href="https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/manifest.json`)}" class="btn btn-secondary" target="_blank">
+      🌐 Install via Stremio Web
+    </a>
+
+    <div style="margin:1.25rem 0">
+      <div class="section-title">📻 M3U Playlist (Tivimate · OTT Navigator · VLC)</div>
       <div class="url-box">
-        <span class="lbl">Short URL (easiest to type)</span>
-        <span class="val">${PUBLIC_URL}/p.m3u</span>
+        <div class="lbl">Shortest URL</div>
+        <div class="val">${PUBLIC_URL}/p.m3u</div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem">
+        <a href="/p.m3u"        class="btn-sm">⬇️ /p.m3u</a>
+        <a href="/playlist.m3u" class="btn-sm">⬇️ /playlist.m3u</a>
+        <a href="/iptv.m3u"     class="btn-sm">⬇️ /iptv.m3u</a>
+        <a href="/live.m3u"     class="btn-sm">⬇️ /live.m3u</a>
       </div>
     </div>
 
-    ${!hasTmdb ? `<div class="env-box">
-      <strong style="color:#fb923c">⚠ TMDB API Key not set</strong><br>
-      <span style="color:#94a3b8">To enable movie posters, ratings and genres, set the environment variable:</span><br><br>
-      <code>TMDB_API_KEY=your_key_here</code><br><br>
-      <span style="color:#64748b">Get a free key at <a href="https://www.themoviedb.org/settings/api" style="color:#a78bfa">themoviedb.org/settings/api</a></span>
-    </div>` : ''}
-
-    <div style="margin-bottom:1rem;margin-top:1rem">
-      <div style="color:#94a3b8;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:.75rem">🚀 How to Use</div>
-      <div class="step"><div class="step-n">1</div><div class="step-t"><strong>Install both addons</strong> — click the buttons above in Stremio</div></div>
-      <div class="step"><div class="step-n">2</div><div class="step-t"><strong>Open Configurator</strong> — add M3U/JSON sources, manage streams, groups, selection models</div></div>
-      <div class="step"><div class="step-n">3</div><div class="step-t"><strong>Sync to Backend</strong> — click "Sync to Backend" in the Backend tab — changes appear in Stremio without reinstalling</div></div>
-      <div class="step"><div class="step-n">4</div><div class="step-t"><strong>Movie metadata</strong> — set <code>TMDB_API_KEY</code> env var for automatic poster/rating/genre fetching</div></div>
+    <div style="margin-bottom:1.25rem">
+      <div class="section-title">🚀 Quick Start</div>
+      <div class="step"><div class="step-n">1</div><div class="step-t"><strong>Install the addon</strong> — click the button above in Stremio app or web</div></div>
+      <div class="step"><div class="step-n">2</div><div class="step-t"><strong>Open Configurator</strong> at <a href="/" style="color:#a78bfa">${PUBLIC_URL}/</a> — add M3U/JSON sources</div></div>
+      <div class="step"><div class="step-n">3</div><div class="step-t"><strong>Sync to Backend</strong> — click "Sync to Backend" in the Backend tab</div></div>
+      <div class="step"><div class="step-n">4</div><div class="step-t"><strong>Channels auto-appear</strong> in Stremio — no reinstall needed for changes</div></div>
+      <div class="step"><div class="step-n">5</div><div class="step-t"><strong>Samsung TV</strong> — navigate to Stremio → ☰ Menu → Addons → paste manifest URL</div></div>
     </div>
 
     <div style="display:flex;flex-wrap:wrap;gap:.5rem">
-      <a href="/" class="btn-sm">⚙️ Configurator</a>
-      <a href="/health" class="btn-sm">❤️ Health</a>
-      <a href="/manifest.json" class="btn-sm">📋 IPTV Manifest</a>
-      <a href="/movie/manifest.json" class="btn-sm">🎬 Movie Manifest</a>
-      <a href="/p.m3u" class="btn-sm">📻 M3U Playlist</a>
-      <a href="/install" class="btn-sm">📦 Install Page</a>
+      <a href="/"                class="btn-sm">⚙️ Configurator</a>
+      <a href="/health"          class="btn-sm">❤️ Health</a>
+      <a href="/manifest.json"   class="btn-sm" target="_blank">📋 Manifest JSON</a>
+      <a href="/p.m3u"           class="btn-sm">📻 M3U Playlist</a>
+      <a href="/api/playlist-info" class="btn-sm">📊 Playlist Info</a>
     </div>
   </div>
-  <footer>Jash Addon v${iptvM.version} · ${IPTV_ID} · ${MOVIE_ID}</footer>
+  <footer>Jash IPTV v${manifest.version} · ${ADDON_ID} · ${PUBLIC_URL}</footer>
 </div>
 </body></html>`;
 }
@@ -1212,147 +822,75 @@ const server = http.createServer(async (req, res) => {
   // ── /health ──────────────────────────────────────────────────────────────
   if (pathname === '/health' || pathname === '/api/health') {
     noCache(res);
-    const iptvStreams  = getEnabledStreams();
-    const iptvGroups   = getIptvGroups();
-    const movieStreams = getEnabledMovies();
-    const movieGroups  = groupMovies(movieStreams);
-    const autoComb     = buildAutoCombined(iptvStreams);
-    const iptvM        = buildIptvManifest();
-    const movieM       = buildMovieManifest();
+    const streams  = getEnabledStreams();
+    const groups   = getGroups();
+    const autoComb = buildAutoCombined(streams);
+    const manifest = buildManifest();
     return json(res, {
-      status: 'ok', uptime: Math.round(process.uptime()),
-      publicUrl: PUBLIC_URL,
-      tmdbConfigured: !!TMDB_KEY,
-      iptv: {
-        streams: iptvStreams.length, groups: iptvGroups.length,
-        autoCombined: autoComb.length, catalogs: iptvM.catalogs.length,
-        version: iptvM.version,
-        manifestUrl: `${PUBLIC_URL}/manifest.json`,
-        installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/manifest.json`,
-        streamTypes: {
-          hls   : iptvStreams.filter(s => detectType(s) === 'hls').length,
-          dash  : iptvStreams.filter(s => detectType(s) === 'dash').length,
-          drm   : iptvStreams.filter(s => hasDRM(s)).length,
-          direct: iptvStreams.filter(s => detectType(s) === 'direct').length,
-        },
+      status     : 'ok',
+      uptime     : Math.round(process.uptime()),
+      publicUrl  : PUBLIC_URL,
+      version    : manifest.version,
+      streams    : streams.length,
+      groups     : groups.length,
+      autoCombined: autoComb.length,
+      catalogs   : manifest.catalogs.length,
+      cacheSize  : streamCache.size,
+      manifestUrl: `${PUBLIC_URL}/manifest.json`,
+      installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/manifest.json`,
+      streamTypes: {
+        hls   : streams.filter(s => detectType(s) === 'hls').length,
+        dash  : streams.filter(s => detectType(s) === 'dash').length,
+        drm   : streams.filter(s => hasDRM(s)).length,
+        direct: streams.filter(s => detectType(s) === 'direct').length,
       },
-      movies: {
-        streams: movieStreams.length, uniqueMovies: movieGroups.length,
-        catalogs: movieM.catalogs.length, version: movieM.version,
-        manifestUrl: `${PUBLIC_URL}/movie/manifest.json`,
-        installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/movie/manifest.json`,
-      },
-      cache: { streams: streamCache.size, tmdb: tmdbCache.size },
     });
   }
 
-  // ── /api/sync — IPTV (POST) ───────────────────────────────────────────────
+  // ── /api/sync (POST) ─────────────────────────────────────────────────────
   if (pathname === '/api/sync' && req.method === 'POST') {
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', () => {
       try {
         const cfg = JSON.parse(body);
-        if (!Array.isArray(cfg.streams)) return json(res, { ok: false, error: 'streams must be array' }, 400);
+        if (!Array.isArray(cfg.streams)) {
+          return json(res, { ok: false, error: 'streams must be an array' }, 400);
+        }
         fs.writeFileSync(CFG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
-        streamCache.clear();
+        streamCache.clear(); // clear cache so next play re-extracts
         const enabled  = cfg.streams.filter(s => s.enabled !== false);
         const autoComb = buildAutoCombined(enabled);
-        const manifest = buildIptvManifest();
-        log(`[SYNC-IPTV] ✅ ${enabled.length} streams | v${manifest.version} | ${autoComb.length} auto-combined`);
+        const manifest = buildManifest();
+        log(`[SYNC] ✅ ${enabled.length} streams | v${manifest.version} | ${autoComb.length} auto-combined`);
         return json(res, {
-          ok: true, streams: enabled.length, autoCombined: autoComb.length,
-          version: manifest.version,
-          manifestUrl: `${PUBLIC_URL}/manifest.json`,
-          installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/manifest.json`,
+          ok          : true,
+          streams     : enabled.length,
+          autoCombined: autoComb.length,
+          groups      : getGroups().length,
+          version     : manifest.version,
+          manifestUrl : `${PUBLIC_URL}/manifest.json`,
+          installUrl  : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/manifest.json`,
+          playlistUrl : `${PUBLIC_URL}/p.m3u`,
         });
-      } catch(e) { err('[SYNC-IPTV]', e.message); return json(res, { ok: false, error: e.message }, 400); }
-    });
-    return;
-  }
-
-  // ── /api/movie-sync — Movie (POST) ────────────────────────────────────────
-  if (pathname === '/api/movie-sync' && req.method === 'POST') {
-    let body = '';
-    req.on('data', c => { body += c; });
-    req.on('end', async () => {
-      try {
-        const cfg = JSON.parse(body);
-        if (!Array.isArray(cfg.streams)) return json(res, { ok: false, error: 'streams must be array' }, 400);
-
-        // Use TMDB_API_KEY env var (override stored key)
-        if (cfg.settings && TMDB_KEY) cfg.settings.tmdbApiKey = TMDB_KEY;
-
-        fs.writeFileSync(MOV_FILE, JSON.stringify(cfg, null, 2), 'utf8');
-        streamCache.clear();
-        const enabled  = cfg.streams.filter(s => s.enabled !== false);
-        const movies   = groupMovies(enabled);
-        const manifest = buildMovieManifest();
-        const tmdbKey  = TMDB_KEY || cfg.settings?.tmdbApiKey || '';
-
-        log(`[SYNC-MOVIE] ✅ ${enabled.length} streams | ${movies.length} unique movies | v${manifest.version} | TMDB: ${tmdbKey ? 'yes' : 'no'}`);
-
-        // Background: enrich movies without metadata (non-blocking)
-        if (tmdbKey) {
-          const toEnrich = movies.filter(m => !m.tmdbId && m.title && m.title !== 'Unknown').slice(0, 100);
-          if (toEnrich.length > 0) {
-            log(`[TMDB] Starting background enrichment for ${toEnrich.length} movies…`);
-            (async () => {
-              let enriched = 0;
-              // Keep a live copy of streams so we can update incrementally
-              let liveStreams = [...cfg.streams];
-              for (const m of toEnrich) {
-                try {
-                  const meta = await fetchTmdbMeta(m.title, m.year, tmdbKey);
-                  if (meta && meta.tmdbId) {
-                    liveStreams = liveStreams.map(s => {
-                      const sk = normalizeMovieTitle(s.title) + '_' + (s.year || '');
-                      if (sk === m.key) return { ...s, ...meta };
-                      return s;
-                    });
-                    enriched++;
-                    // Save every 10 enrichments
-                    if (enriched % 10 === 0) {
-                      fs.writeFileSync(MOV_FILE, JSON.stringify({ ...cfg, streams: liveStreams }, null, 2), 'utf8');
-                      log(`[TMDB] ✅ Enriched ${enriched} so far…`);
-                    }
-                  }
-                  await new Promise(r => setTimeout(r, 300)); // ~3 req/s rate limit
-                } catch(e) {
-                  if (e.message && e.message.includes('401')) {
-                    err('[TMDB] Invalid API key — stopping enrichment');
-                    break;
-                  }
-                }
-              }
-              if (enriched > 0) {
-                fs.writeFileSync(MOV_FILE, JSON.stringify({ ...cfg, streams: liveStreams }, null, 2), 'utf8');
-                log(`[TMDB] ✅ Final: enriched ${enriched} movies`);
-              }
-            })().catch(e => err('[TMDB] background enrichment error:', e.message));
-          }
-        }
-
-        return json(res, {
-          ok: true, streams: enabled.length, uniqueMovies: movies.length,
-          version: manifest.version,
-          tmdbConfigured: !!tmdbKey,
-          manifestUrl: `${PUBLIC_URL}/movie/manifest.json`,
-          installUrl : `stremio://${PUBLIC_URL.replace(/^https?:\/\//, '')}/movie/manifest.json`,
-        });
-      } catch(e) { err('[SYNC-MOVIE]', e.message); return json(res, { ok: false, error: e.message }, 400); }
+      } catch(e) {
+        err('[SYNC]', e.message);
+        return json(res, { ok: false, error: e.message }, 400);
+      }
     });
     return;
   }
 
   // ── /api/config ───────────────────────────────────────────────────────────
-  if (pathname === '/api/config')       { noCache(res); return json(res, loadIptvConfig()); }
-  if (pathname === '/api/movie-config') { noCache(res); return json(res, loadMovieConfig()); }
+  if (pathname === '/api/config') {
+    noCache(res);
+    return json(res, loadConfig());
+  }
 
   // ── /api/cache (DELETE) ───────────────────────────────────────────────────
   if (pathname === '/api/cache' && req.method === 'DELETE') {
-    const n = streamCache.size + tmdbCache.size;
-    streamCache.clear(); tmdbCache.clear();
+    const n = streamCache.size;
+    streamCache.clear();
     log(`[CACHE] Cleared ${n} entries`);
     return json(res, { ok: true, cleared: n });
   }
@@ -1360,28 +898,24 @@ const server = http.createServer(async (req, res) => {
   // ── /api/install ──────────────────────────────────────────────────────────
   if (pathname === '/api/install') {
     noCache(res);
-    const host   = PUBLIC_URL.replace(/^https?:\/\//, '');
-    const iptvM  = buildIptvManifest();
-    const movieM = buildMovieManifest();
+    const manifest = buildManifest();
+    const host     = PUBLIC_URL.replace(/^https?:\/\//, '');
     return json(res, {
-      iptv: {
-        manifestUrl  : `${PUBLIC_URL}/manifest.json`,
-        stremioUrl   : `stremio://${host}/manifest.json`,
-        webInstallUrl: `https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/manifest.json`)}`,
-        version      : iptvM.version,
-        streams      : getEnabledStreams().length,
+      manifestUrl  : `${PUBLIC_URL}/manifest.json`,
+      stremioUrl   : `stremio://${host}/manifest.json`,
+      webInstallUrl: `https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/manifest.json`)}`,
+      configureUrl : `${PUBLIC_URL}/`,
+      installPageUrl: `${PUBLIC_URL}/install`,
+      playlistUrl  : `${PUBLIC_URL}/playlist.m3u`,
+      shortUrls    : {
+        m3u     : `${PUBLIC_URL}/p.m3u`,
+        iptv    : `${PUBLIC_URL}/iptv.m3u`,
+        live    : `${PUBLIC_URL}/live.m3u`,
+        channels: `${PUBLIC_URL}/channels.m3u`,
       },
-      movie: {
-        manifestUrl  : `${PUBLIC_URL}/movie/manifest.json`,
-        stremioUrl   : `stremio://${host}/movie/manifest.json`,
-        webInstallUrl: `https://web.stremio.com/#/addons?addon=${encodeURIComponent(`${PUBLIC_URL}/movie/manifest.json`)}`,
-        version      : movieM.version,
-        movies       : groupMovies(getEnabledMovies()).length,
-      },
-      configureUrl   : `${PUBLIC_URL}/`,
-      playlistUrl    : `${PUBLIC_URL}/playlist.m3u`,
-      shortUrls      : { m3u: `${PUBLIC_URL}/p.m3u`, iptv: `${PUBLIC_URL}/iptv.m3u` },
-      tmdbConfigured : !!TMDB_KEY,
+      version : manifest.version,
+      streams : getEnabledStreams().length,
+      groups  : getGroups().length,
     });
   }
 
@@ -1389,9 +923,10 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/playlist-info') {
     noCache(res);
     const streams = getEnabledStreams();
-    const groups  = getIptvGroups();
+    const groups  = getGroups();
     return json(res, {
-      total: streams.length, groups: groups.length,
+      total      : streams.length,
+      groups     : groups.length,
       playlistUrl: `${PUBLIC_URL}/playlist.m3u`,
       shortUrls  : {
         all     : `${PUBLIC_URL}/playlist.m3u`,
@@ -1409,83 +944,54 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // ██  IPTV ADDON ROUTES
+  // ██  STREMIO ADDON ROUTES
   // ══════════════════════════════════════════════════════════════════════════
 
+  // /manifest.json
   if (pathname === '/manifest.json') {
     noCache(res);
-    const m = buildIptvManifest();
-    log(`[IPTV-MANIFEST] v${m.version} | ${m.catalogs.length} catalogs | ${getEnabledStreams().length} streams`);
+    const m = buildManifest();
+    log(`[MANIFEST] v${m.version} | ${m.catalogs.length} catalogs | ${getEnabledStreams().length} streams`);
     return json(res, m);
   }
 
-  const iptvCatM = pathname.match(/^\/catalog\/tv\/([^/]+?)(?:\/(.+))?\.json$/);
-  if (iptvCatM) {
+  // /catalog/tv/:id[/:extra].json
+  const catM = pathname.match(/^\/catalog\/tv\/([^/]+?)(?:\/(.+))?\.json$/);
+  if (catM) {
     noCache(res);
-    const catId = decodeURIComponent(iptvCatM[1]);
+    const catId = decodeURIComponent(catM[1]);
     const extra = {};
-    if (iptvCatM[2]) iptvCatM[2].split('/').forEach(seg => {
-      const [k, ...v] = seg.split('='); if (k) extra[k] = decodeURIComponent(v.join('=') || '');
-    });
+    if (catM[2]) {
+      catM[2].split('/').forEach(seg => {
+        const [k, ...v] = seg.split('=');
+        if (k) extra[k] = decodeURIComponent(v.join('=') || '');
+      });
+    }
     if (query.extra)  Object.assign(extra, parseExtra(String(query.extra)));
     if (query.search) extra.search = String(query.search);
     if (query.genre)  extra.genre  = String(query.genre);
     if (query.skip)   extra.skip   = String(query.skip);
-    return json(res, handleIptvCatalog(catId, extra));
+    debug(`[CATALOG] ${catId} search="${extra.search || ''}" skip=${extra.skip || 0}`);
+    return json(res, handleCatalog(catId, extra));
   }
 
-  const iptvMetaM = pathname.match(/^\/meta\/tv\/(.+)\.json$/);
-  if (iptvMetaM) { noCache(res); return json(res, handleIptvMeta(iptvMetaM[1])); }
-
-  const iptvStreamM = pathname.match(/^\/stream\/tv\/(.+)\.json$/);
-  if (iptvStreamM) {
+  // /meta/tv/:id.json
+  const metaM = pathname.match(/^\/meta\/tv\/(.+)\.json$/);
+  if (metaM) {
     noCache(res);
-    try { return json(res, await handleIptvStream(iptvStreamM[1])); }
-    catch(e) { err('[IPTV-STREAM]', e.message); return json(res, { streams: [] }); }
+    return json(res, handleMeta(metaM[1]));
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ██  MOVIE ADDON ROUTES  (/movie/*)
-  // ══════════════════════════════════════════════════════════════════════════
-
-  if (pathname === '/movie/manifest.json') {
+  // /stream/tv/:id.json
+  const streamM = pathname.match(/^\/stream\/tv\/(.+)\.json$/);
+  if (streamM) {
     noCache(res);
-    const m = buildMovieManifest();
-    log(`[MOVIE-MANIFEST] v${m.version} | ${m.catalogs.length} catalogs | ${groupMovies(getEnabledMovies()).length} movies`);
-    return json(res, m);
-  }
-
-  const movCatM = pathname.match(/^\/movie\/catalog\/movie\/([^/]+?)(?:\/(.+))?\.json$/);
-  if (movCatM) {
-    noCache(res);
-    const catId = decodeURIComponent(movCatM[1]);
-    const extra = {};
-    if (movCatM[2]) movCatM[2].split('/').forEach(seg => {
-      const [k, ...v] = seg.split('='); if (k) extra[k] = decodeURIComponent(v.join('=') || '');
-    });
-    if (query.extra)  Object.assign(extra, parseExtra(String(query.extra)));
-    if (query.search) extra.search = String(query.search);
-    if (query.genre)  extra.genre  = String(query.genre);
-    if (query.skip)   extra.skip   = String(query.skip);
-    return json(res, handleMovieCatalog(catId, extra));
-  }
-
-  const movMetaM = pathname.match(/^\/movie\/meta\/movie\/(.+)\.json$/);
-  if (movMetaM) {
-    noCache(res);
-    try { return json(res, await handleMovieMeta(movMetaM[1])); }
-    catch(e) { err('[MOVIE-META]', e.message); return json(res, { meta: null }); }
-  }
-
-  const movStreamM = pathname.match(/^\/movie\/stream\/movie\/(.+)\.json$/);
-  if (movStreamM) {
-    noCache(res);
-    try { return json(res, await handleMovieStream(movStreamM[1])); }
-    catch(e) { err('[MOVIE-STREAM]', e.message); return json(res, { streams: [] }); }
-  }
-
-  if (pathname === '/movie' || pathname === '/movie/') {
-    res.writeHead(302, { Location: '/install' }); return res.end();
+    try {
+      return json(res, await handleStream(streamM[1]));
+    } catch(e) {
+      err('[STREAM]', e.message);
+      return json(res, { streams: [] });
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1493,26 +999,36 @@ const server = http.createServer(async (req, res) => {
   // ══════════════════════════════════════════════════════════════════════════
 
   const PLAYLIST_ALIASES = ['/playlist.m3u', '/p.m3u', '/iptv.m3u', '/live.m3u', '/channels.m3u'];
-  const groupM2 = pathname.match(/^\/playlist\/(.+)\.m3u$/);
-  if (PLAYLIST_ALIASES.includes(pathname) || groupM2) {
-    const filterGroup = groupM2 ? decodeURIComponent(groupM2[1]) : null;
-    const all         = getEnabledStreams();
-    const filtered    = filterGroup ? all.filter(s => (s.group || 'Uncategorized') === filterGroup) : all;
-    const settings    = getIptvSettings();
-    const pName       = filterGroup ? `${settings.addonName} - ${filterGroup}` : settings.addonName;
+  const groupPlaylistM   = pathname.match(/^\/playlist\/(.+)\.m3u$/);
+
+  if (PLAYLIST_ALIASES.includes(pathname) || groupPlaylistM) {
+    const filterGroup = groupPlaylistM ? decodeURIComponent(groupPlaylistM[1]) : null;
+    const allStreams   = getEnabledStreams();
+    const filtered    = filterGroup
+      ? allStreams.filter(s => (s.group || 'Uncategorized') === filterGroup)
+      : allStreams;
+    const settings    = getSettings();
+    const pName       = filterGroup
+      ? `${settings.addonName} - ${filterGroup}`
+      : settings.addonName;
+
     if (!filtered.length) {
-      res.writeHead(filterGroup ? 404 : 200, { 'Content-Type': 'text/plain;charset=utf-8' });
-      return res.end(filterGroup ? `Group "${filterGroup}" not found.` : '#EXTM3U\n# No streams yet. Open configurator.');
+      res.writeHead(filterGroup ? 404 : 200, { 'Content-Type': 'text/plain;charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+      return res.end(filterGroup
+        ? `# Group "${filterGroup}" not found or has no streams.`
+        : '#EXTM3U\n# No streams yet. Open the configurator and add sources.'
+      );
     }
+
     const content = generateM3U(filtered, pName);
     const fname   = filterGroup ? `${filterGroup.replace(/\s+/g, '-')}.m3u` : 'playlist.m3u';
     res.writeHead(200, {
-      'Content-Type'       : 'application/x-mpegurl;charset=utf-8',
-      'Content-Disposition': `inline;filename="${fname}"`,
-      'Content-Length'     : Buffer.byteLength(content, 'utf8'),
+      'Content-Type'               : 'application/x-mpegurl;charset=utf-8',
+      'Content-Disposition'        : `inline;filename="${fname}"`,
+      'Content-Length'             : Buffer.byteLength(content, 'utf8'),
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control'      : 'no-cache,no-store',
-      'X-Stream-Count'     : String(filtered.length),
+      'Cache-Control'              : 'no-cache,no-store',
+      'X-Stream-Count'             : String(filtered.length),
     });
     log(`[M3U] ${filtered.length} streams → ${pathname}`);
     return res.end(content);
@@ -1520,43 +1036,55 @@ const server = http.createServer(async (req, res) => {
 
   // ── Logo / Favicon ────────────────────────────────────────────────────────
   if (pathname === '/logo.png' || pathname === '/favicon.ico') {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#7C3AED"/><stop offset="100%" stop-color="#4F46E5"/></linearGradient></defs><rect width="200" height="200" rx="40" fill="url(#g)"/><text x="100" y="130" font-size="100" text-anchor="middle" fill="white">📡</text><text x="100" y="175" font-size="22" font-family="Arial,sans-serif" font-weight="bold" text-anchor="middle" fill="rgba(255,255,255,0.8)">JASH</text></svg>`;
-    res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public,max-age=86400' });
-    return res.end(svg);
-  }
-  if (pathname === '/movie-logo.png') {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#EA580C"/><stop offset="100%" stop-color="#D97706"/></linearGradient></defs><rect width="200" height="200" rx="40" fill="url(#g)"/><text x="100" y="130" font-size="100" text-anchor="middle" fill="white">🎬</text><text x="100" y="175" font-size="18" font-family="Arial,sans-serif" font-weight="bold" text-anchor="middle" fill="rgba(255,255,255,0.8)">MOVIES</text></svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">` +
+      `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+      `<stop offset="0%" stop-color="#7C3AED"/><stop offset="100%" stop-color="#4F46E5"/>` +
+      `</linearGradient></defs>` +
+      `<rect width="200" height="200" rx="40" fill="url(#g)"/>` +
+      `<text x="100" y="128" font-size="90" text-anchor="middle" fill="white">📡</text>` +
+      `<text x="100" y="175" font-size="22" font-family="Arial,sans-serif" font-weight="bold" text-anchor="middle" fill="rgba(255,255,255,0.85)">JASH</text>` +
+      `</svg>`;
     res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public,max-age=86400' });
     return res.end(svg);
   }
 
   // ── /install ──────────────────────────────────────────────────────────────
   if (pathname === '/install' || pathname === '/addon') {
-    res.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8' });
+    res.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-cache' });
     return res.end(installPage());
   }
-  if (pathname === '/configure') { res.writeHead(302, { Location: '/' }); return res.end(); }
+
+  if (pathname === '/configure') {
+    res.writeHead(302, { Location: '/' });
+    return res.end();
+  }
 
   // ── Static files / SPA ───────────────────────────────────────────────────
   if (fs.existsSync(DIST_DIR)) {
     const reqPath  = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '');
     const safePath = path.resolve(DIST_DIR, reqPath);
-    if (!safePath.startsWith(path.resolve(DIST_DIR))) { res.writeHead(403); return res.end('Forbidden'); }
-    if (fs.existsSync(safePath) && fs.statSync(safePath).isFile()) return serveFile(res, safePath);
+    // Security: block path traversal
+    if (!safePath.startsWith(path.resolve(DIST_DIR))) {
+      res.writeHead(403); return res.end('Forbidden');
+    }
+    if (fs.existsSync(safePath) && fs.statSync(safePath).isFile()) {
+      return serveFile(res, safePath);
+    }
+    // SPA fallback
     return serveFile(res, path.join(DIST_DIR, 'index.html'));
   }
 
-  // ── No build yet → install page ──────────────────────────────────────────
+  // ── No dist build yet → show install page ────────────────────────────────
   res.writeHead(200, { 'Content-Type': 'text/html;charset=utf-8' });
   res.end(installPage());
 });
 
-// ─── Error handlers ────────────────────────────────────────────────────────────
+// ─── Error handling ────────────────────────────────────────────────────────────
 process.on('uncaughtException',  e => err('Uncaught:', e.message));
 process.on('unhandledRejection', r => err('Unhandled:', String(r)));
 server.on('error', e => {
-  if (e.code === 'EADDRINUSE') { err(`Port ${PORT} in use`); process.exit(1); }
-  err('Server:', e.message);
+  if (e.code === 'EADDRINUSE') { err(`Port ${PORT} is already in use`); process.exit(1); }
+  err('Server error:', e.message);
 });
 
 // ─── TCP keepalive ────────────────────────────────────────────────────────────
@@ -1567,59 +1095,56 @@ server.on('connection', socket => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ██  SELF-PING KEEPALIVE (prevents Render/Koyeb free tier sleep)
+// ██  SELF-PING KEEPALIVE  (prevents Render/Koyeb free tier from sleeping)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function startKeepalive() {
   const INTERVAL = 14 * 60 * 1000; // 14 minutes
   const pingUrl  = `${PUBLIC_URL}/health`;
   setInterval(() => {
-    debug(`[KEEPALIVE] ping → ${pingUrl}`);
+    debug(`[KEEPALIVE] → ${pingUrl}`);
     const lib = pingUrl.startsWith('https') ? https : http;
     const req = lib.get(pingUrl, { timeout: 10000 }, res => {
-      debug(`[KEEPALIVE] OK (${res.statusCode})`); res.resume();
+      debug(`[KEEPALIVE] ✓ ${res.statusCode}`);
+      res.resume();
     });
-    req.on('error', e => debug(`[KEEPALIVE] fail: ${e.message}`));
+    req.on('error',   e => debug(`[KEEPALIVE] ✗ ${e.message}`));
     req.on('timeout', () => { req.destroy(); debug('[KEEPALIVE] timeout'); });
   }, INTERVAL);
-  log(`[KEEPALIVE] Active → pinging every 14min`);
+  log(`[KEEPALIVE] Active — self-ping every 14 min → ${pingUrl}`);
 }
 
-// ─── Start ────────────────────────────────────────────────────────────────────
-server.listen(PORT, '0.0.0.0', () => {
-  const iptvStreams  = getEnabledStreams();
-  const iptvGroups   = getIptvGroups();
-  const movieStreams = getEnabledMovies();
-  const movieGroups  = groupMovies(movieStreams);
-  const iptvM        = buildIptvManifest();
-  const movieM       = buildMovieManifest();
-  const host         = PUBLIC_URL.replace(/^https?:\/\//, '');
+// ═══════════════════════════════════════════════════════════════════════════════
+// ██  START
+// ═══════════════════════════════════════════════════════════════════════════════
 
-  log('═══════════════════════════════════════════════════════════════════════');
-  log(`🚀  Jash Addon Backend v12.0`);
-  log(`📡  Port         : ${PORT}`);
-  log(`🌐  Public URL   : ${PUBLIC_URL}`);
-  log(`🎭  TMDB Key     : ${TMDB_KEY ? '✅ Set (' + TMDB_KEY.slice(0,8) + '…)' : '⚠️  Not set (set TMDB_API_KEY env var)'}`);
-  log('───────────────────────────────────────────────────────────────────────');
-  log(`📺  IPTV ADDON   : ${PUBLIC_URL}/manifest.json`);
-  log(`    Stremio      : stremio://${host}/manifest.json`);
-  log(`    Version      : ${iptvM.version}  (${IPTV_ID})`);
-  log(`    Streams      : ${iptvStreams.length} | Groups: ${iptvGroups.length} | Catalogs: ${iptvM.catalogs.length}`);
-  log('───────────────────────────────────────────────────────────────────────');
-  log(`🎬  MOVIE ADDON  : ${PUBLIC_URL}/movie/manifest.json`);
-  log(`    Stremio      : stremio://${host}/movie/manifest.json`);
-  log(`    Version      : ${movieM.version}  (${MOVIE_ID})`);
-  log(`    Movies       : ${movieGroups.length} unique | Streams: ${movieStreams.length} | Catalogs: ${movieM.catalogs.length}`);
-  log('───────────────────────────────────────────────────────────────────────');
-  log(`⚙️   Configurator : ${PUBLIC_URL}/`);
-  log(`🛠️   Install Page : ${PUBLIC_URL}/install`);
-  log(`❤️   Health       : ${PUBLIC_URL}/health`);
-  log(`📻  Playlist     : ${PUBLIC_URL}/p.m3u`);
-  log('═══════════════════════════════════════════════════════════════════════');
+server.listen(PORT, '0.0.0.0', () => {
+  const streams  = getEnabledStreams();
+  const groups   = getGroups();
+  const autoComb = buildAutoCombined(streams);
+  const manifest = buildManifest();
+  const host     = PUBLIC_URL.replace(/^https?:\/\//, '');
+
+  log('═══════════════════════════════════════════════════════════════');
+  log(`🚀  Jash IPTV Addon v13.0`);
+  log(`📡  Port       : ${PORT}`);
+  log(`🌐  Public URL : ${PUBLIC_URL}`);
+  log('───────────────────────────────────────────────────────────────');
+  log(`📺  Manifest   : ${PUBLIC_URL}/manifest.json`);
+  log(`🔌  Install    : stremio://${host}/manifest.json`);
+  log(`⚙️   Configurator: ${PUBLIC_URL}/`);
+  log(`🛠️   Install Page: ${PUBLIC_URL}/install`);
+  log(`❤️   Health    : ${PUBLIC_URL}/health`);
+  log(`📻  Playlist  : ${PUBLIC_URL}/p.m3u`);
+  log('───────────────────────────────────────────────────────────────');
+  log(`📊  Streams    : ${streams.length} | Groups: ${groups.length} | Auto-Combined: ${autoComb.length}`);
+  log(`📋  Catalogs   : ${manifest.catalogs.length} | Version: ${manifest.version}`);
+  log(`💾  Stream types: HLS=${streams.filter(s=>detectType(s)==='hls').length} DASH=${streams.filter(s=>detectType(s)==='dash').length} DRM=${streams.filter(s=>hasDRM(s)).length} Direct=${streams.filter(s=>detectType(s)==='direct').length}`);
+  log('═══════════════════════════════════════════════════════════════');
 
   if (!PUBLIC_URL.includes('localhost') && !PUBLIC_URL.includes('127.0.0.1')) {
     startKeepalive();
   } else {
-    log('[KEEPALIVE] Disabled (localhost)');
+    log('[KEEPALIVE] Disabled on localhost');
   }
 });

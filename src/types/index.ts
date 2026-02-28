@@ -119,67 +119,6 @@ export interface CombinedChannel {
   createdAt: number;
 }
 
-export type Tab = 'sources' | 'streams' | 'groups' | 'health' | 'statistics' | 'handler' | 'export' | 'backend' | 'settings' | 'install' | 'models' | 'player' | 'movies';
-
-// ── Movie Addon Types ────────────────────────────────────────────────────────
-
-export interface MovieStream {
-  id: string;
-  title: string;
-  year?: number;
-  url: string;
-  quality?: string;  // '720p' | '1080p' | '4K' | '480p' etc.
-  size?: string;
-  codec?: string;
-  language?: string;
-  source?: string;
-  logo?: string;
-  group?: string;
-  sourceId: string;
-  enabled: boolean;
-  // TMDB / IMDB metadata
-  tmdbId?: number;
-  imdbId?: string;
-  poster?: string;
-  backdrop?: string;
-  overview?: string;
-  rating?: number;
-  genres?: string[];
-  releaseDate?: string;
-  runtime?: number;
-  // DRM
-  licenseType?: string;
-  licenseKey?: string;
-  userAgent?: string;
-  cookie?: string;
-  httpHeaders?: Record<string, string>;
-}
-
-export interface MovieSource {
-  id: string;
-  name: string;
-  type: 'url' | 'file' | 'json';
-  url?: string;
-  content?: string;
-  enabled: boolean;
-  streamCount: number;
-  lastUpdated?: number;
-  status: 'active' | 'error' | 'loading' | 'idle';
-  error?: string;
-  autoRefreshInterval?: number;
-  nextAutoRefresh?: number;
-}
-
-export interface MovieAddonSettings {
-  addonId: string;
-  addonName: string;
-  tmdbApiKey: string;
-  autoFetchMetadata: boolean;
-  removeDuplicates: boolean;
-  combineQualities: boolean;
-  defaultLanguage: string;
-}
-
 export interface ParsedM3U {
   streams: Omit<Stream, 'id' | 'sourceId' | 'enabled' | 'status'>[];
 }
@@ -190,3 +129,17 @@ export interface HealthCheckResult {
   responseTime?: number;
   checkedAt: number;
 }
+
+export type Tab =
+  | 'sources'
+  | 'streams'
+  | 'groups'
+  | 'health'
+  | 'statistics'
+  | 'handler'
+  | 'export'
+  | 'backend'
+  | 'settings'
+  | 'install'
+  | 'models'
+  | 'player';

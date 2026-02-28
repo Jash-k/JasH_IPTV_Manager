@@ -20,7 +20,6 @@ const tabs: { id: Tab; label: string; icon: string; highlight?: string; badge?: 
   { id: 'export',     label: 'Export',    icon: '⬇️', highlight: 'green',  badge: '↓'   },
   { id: 'backend',    label: 'Backend',   icon: '🖥️', highlight: 'violet', badge: 'LIVE'},
   { id: 'player',     label: 'Player',    icon: '▶️',  highlight: 'orange', badge: 'TV'  },
-  { id: 'movies',     label: 'Movies',    icon: '🎬', highlight: 'yellow', badge: 'NEW' },
   { id: 'settings',   label: 'Settings',  icon: '⚙️' },
   { id: 'install',    label: 'Install',   icon: '🔌' },
 ];

@@ -14,18 +14,9 @@ export function getManifestUrl(): string {
   return `${getBackendBase()}/manifest.json`;
 }
 
-export function getMovieManifestUrl(): string {
-  return `${getBackendBase()}/movie/manifest.json`;
-}
-
 export function getStremioInstallUrl(): string {
   const base = getBackendBase().replace(/^https?:\/\//, '');
   return `stremio://${base}/manifest.json`;
-}
-
-export function getMovieStremioInstallUrl(): string {
-  const base = getBackendBase().replace(/^https?:\/\//, '');
-  return `stremio://${base}/movie/manifest.json`;
 }
 
 export function getPlaylistUrl(): string {
@@ -71,7 +62,7 @@ export async function checkBackendHealth(): Promise<{
   }
 }
 
-// ─── IPTV Sync ─────────────────────────────────────────────────────────────────
+// ─── IPTV Config Sync ──────────────────────────────────────────────────────────
 export async function syncConfigToBackend(payload: {
   streams: unknown[];
   groups?: unknown[];
@@ -91,7 +82,7 @@ export async function syncConfigToBackend(payload: {
     }
     return {
       ok     : true,
-      message: `✅ Synced ${data.streams} streams${data.autoCombined ? ` (${data.autoCombined} auto-combined)` : ''} · v${data.version}`,
+      message: `✅ Synced ${data.streams} streams${data.autoCombined ? ` · ${data.autoCombined} auto-combined` : ''} · v${data.version}`,
       version: data.version,
       data,
     };
@@ -104,66 +95,59 @@ export async function syncConfigToBackend(payload: {
   }
 }
 
-// ─── Movie Sync ────────────────────────────────────────────────────────────────
-export async function syncMoviesToBackend(payload: {
-  streams: unknown[];
-  settings?: Record<string, unknown>;
-}): Promise<{ ok: boolean; message: string; version?: string; data?: unknown }> {
-  try {
-    const res = await fetch(`${getBackendBase()}/api/movie-sync`, {
-      method : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body   : JSON.stringify(payload),
-      signal : AbortSignal.timeout(30000),
-    });
-    const data = await res.json();
-    if (!res.ok || !data.ok) {
-      return { ok: false, message: data.error || `HTTP ${res.status}` };
-    }
-    return {
-      ok     : true,
-      message: `✅ Synced ${data.streams} streams · ${data.uniqueMovies} unique movies · v${data.version}`,
-      version: data.version,
-      data,
-    };
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, message: `❌ Movie sync failed: ${msg}` };
-  }
-}
-
 // ─── Clear Cache ───────────────────────────────────────────────────────────────
 export async function clearBackendCache(): Promise<{ ok: boolean; cleared?: number }> {
   try {
-    const res  = await fetch(`${getBackendBase()}/api/cache`, { method: 'DELETE', signal: AbortSignal.timeout(5000) });
+    const res  = await fetch(`${getBackendBase()}/api/cache`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(5000),
+    });
     const data = await res.json();
     return { ok: true, cleared: data.cleared };
-  } catch { return { ok: false }; }
+  } catch {
+    return { ok: false };
+  }
 }
 
 // ─── Fetch Playlist Info ───────────────────────────────────────────────────────
 export async function fetchPlaylistInfo(): Promise<{
-  total: number; groups: number;
-  playlistUrl: string; shortUrls: Record<string, string>;
+  total: number;
+  groups: number;
+  playlistUrl: string;
+  shortUrls: Record<string, string>;
   groupUrls: { group: string; url: string; count: number }[];
 } | null> {
   try {
-    const res  = await fetch(`${getBackendBase()}/api/playlist-info`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${getBackendBase()}/api/playlist-info`, {
+      signal: AbortSignal.timeout(5000),
+    });
     if (!res.ok) return null;
     return await res.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 // ─── Fetch Install Info ────────────────────────────────────────────────────────
 export async function fetchInstallInfo(): Promise<{
-  iptv: { manifestUrl: string; stremioUrl: string; webInstallUrl: string; version: string; streams: number };
-  movie: { manifestUrl: string; stremioUrl: string; webInstallUrl: string; version: string; movies: number };
-  configureUrl: string; playlistUrl: string;
-  shortUrls: Record<string, string>;
+  manifestUrl  : string;
+  stremioUrl   : string;
+  webInstallUrl: string;
+  configureUrl : string;
+  installPageUrl: string;
+  playlistUrl  : string;
+  shortUrls    : Record<string, string>;
+  version      : string;
+  streams      : number;
+  groups       : number;
 } | null> {
   try {
-    const res  = await fetch(`${getBackendBase()}/api/install`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${getBackendBase()}/api/install`, {
+      signal: AbortSignal.timeout(5000),
+    });
     if (!res.ok) return null;
     return await res.json();
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
