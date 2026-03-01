@@ -67,6 +67,8 @@ interface AppState {
   getFilteredChannels: () => Channel[];
   exportDB: () => string;
   syncDB: () => Promise<void>;
+  setServerUrl: (url: string) => void;
+  syncToServer: () => Promise<void>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -363,5 +365,20 @@ export const useStore = create<AppState>((set, get) => ({
   syncDB: async () => {
     const { channels, playlists, drmProxies, sources, groups } = get();
     await syncToServer({ channels, playlists, drmProxies, sources, groups });
+  },
+
+  setServerUrl: (url: string) => {
+    set({ serverUrl: url });
+  },
+
+  syncToServer: async () => {
+    const { channels, playlists, drmProxies, sources, groups, serverUrl } = get();
+    const url = serverUrl || BASE_URL;
+    const resp = await fetch(`${url}/api/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channels, playlists, drmProxies, sources, groups }),
+    });
+    if (!resp.ok) throw new Error(`Server returned ${resp.status}: ${resp.statusText}`);
   },
 }));
