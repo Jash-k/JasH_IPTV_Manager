@@ -1,47 +1,80 @@
 export interface Channel {
   id: string;
   name: string;
-  group: string;
-  logo: string;
   url: string;
-  kid: string;
-  contentKey: string;
-  enabled: boolean;
-  language: string;
+  logo?: string;
+  group: string;
+  tvgId?: string;
+  tvgName?: string;
+  language?: string;
+  country?: string;
+  isDrm?: boolean;
+  drmKeyId?: string;
+  drmKey?: string;
+  isActive: boolean;
+  order: number;
+  sourceId: string;
+  tags?: string[];
+  streamType?: 'hls' | 'dash' | 'direct';
+  licenseType?: string;
+  licenseKey?: string;
+  userAgent?: string;
+  referer?: string;
+  cookie?: string;
+  httpHeaders?: Record<string, string>;
+  isTamil?: boolean;
 }
+
+export interface Group {
+  id: string;
+  name: string;
+  logo?: string;
+  isActive: boolean;
+  order: number;
+  channelCount?: number;
+  isTamil?: boolean;
+}
+
+export type SourceType = 'm3u' | 'json' | 'php' | 'url' | 'file';
 
 export interface Source {
   id: string;
   name: string;
-  url: string;
-  format: 'm3u' | 'json' | 'auto';
-  lastRefresh: number | null;
+  type: SourceType;
+  url?: string;
+  content?: string;
+  autoRefresh: boolean;
   refreshInterval: number;
-  totalParsed: number;
-  tamilFiltered: number;
-  enabled: boolean;
-  tamilFilter: boolean;
+  lastRefreshed?: string;
+  status: 'idle' | 'loading' | 'success' | 'error';
+  errorMessage?: string;
+  channelCount?: number;
+  tamilCount?: number;
 }
 
-export interface Playlist {
+export interface PlaylistConfig {
   id: string;
   name: string;
-  description: string;
-  sourceIds: string[];
-  tamilOnly: boolean;
-  enabledOnly: boolean;
-  groupFilter: string;
-  sortBy: 'name' | 'group' | 'source' | 'none';
-  createdAt: number;
-  updatedAt: number;
+  generatedUrl: string;
+  includeGroups: string[];
+  excludeGroups: string[];
+  tamilOnly?: boolean;
+  filterTags?: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
-export interface ServerConfig {
-  serverUrl: string;
-  port: number;
-  playlistName: string;
-  keepAliveEnabled: boolean;
-  keepAliveInterval: number;
+export interface DrmProxy {
+  id: string;
+  channelId: string;
+  channelName?: string;
+  keyId: string;
+  key: string;
+  licenseUrl?: string;
+  licenseType?: string;
+  proxyUrl: string;
+  isActive: boolean;
+  notes?: string;
 }
 
-export type Tab = 'sources' | 'channels' | 'player' | 'generator' | 'playlists' | 'deploy';
+export type TabType = 'sources' | 'channels' | 'groups' | 'playlists' | 'drm' | 'server';

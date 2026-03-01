@@ -1,542 +1,422 @@
-import { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { useStore } from '../store/useStore';
 import { Source } from '../types';
-import { AppStore } from '../store/useAppStore';
-import { cn } from '../utils/cn';
+import {
+  Plus, Trash2, RefreshCw, Upload, Link, CheckCircle, XCircle,
+  Clock, Edit2, Save, X, FileJson, FileText, Globe, Timer,
+  AlertCircle, Zap, Star, Filter
+} from 'lucide-react';
+import toast from 'react-hot-toast';
+import { detectFormat, isTamilChannel } from '../utils/parser';
 
-interface Props { store: AppStore; }
+const SOURCE_TYPE_ICONS: Record<string, React.ReactNode> = {
+  m3u: <FileText className="w-4 h-4 text-green-400" />,
+  json: <FileJson className="w-4 h-4 text-yellow-400" />,
+  php: <Globe className="w-4 h-4 text-blue-400" />,
+  url: <Link className="w-4 h-4 text-purple-400" />,
+  file: <Upload className="w-4 h-4 text-pink-400" />,
+};
 
-type AddMode = 'url' | 'json' | 'file' | 'manual' | null;
-
-const genId = () => `src_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-
-const AUTO_REFRESH_OPTIONS = [
-  { label: 'Off',       value: 0    },
-  { label: '15 min',    value: 15   },
-  { label: '30 min',    value: 30   },
-  { label: '1 hour',    value: 60   },
-  { label: '2 hours',   value: 120  },
-  { label: '4 hours',   value: 240  },
-  { label: '6 hours',   value: 360  },
-  { label: '12 hours',  value: 720  },
-  { label: '24 hours',  value: 1440 },
+const EXAMPLE_URLS = [
+  { label: '🇮🇳 India Channels (iptv-org)', url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/in.m3u', type: 'm3u' as const },
+  { label: '🎬 Sun TV (Tamil)', url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/in_sun.m3u', type: 'm3u' as const },
+  { label: '🌐 World IPTV', url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/index.m3u', type: 'm3u' as const },
 ];
 
-function formatNextRefresh(nextAutoRefresh?: number): string {
-  if (!nextAutoRefresh) return '';
-  const diff = nextAutoRefresh - Date.now();
-  if (diff <= 0) return 'Refreshing soon…';
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `in ${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  const rem = mins % 60;
-  return rem > 0 ? `in ${hrs}h ${rem}m` : `in ${hrs}h`;
-}
+type FormState = {
+  name: string; url: string; type: Source['type'];
+  autoRefresh: boolean; refreshInterval: number;
+};
 
-function formatLastRefresh(ts?: number): string {
-  if (!ts) return 'Never';
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
-
-export const SourcesTab: React.FC<Props> = ({ store }) => {
+export default function SourcesTab() {
   const {
-    sources, selectionModels,
-    addSource, refreshSource, deleteSource, toggleSource,
-    applyModelToSource, setAutoRefresh, setActiveTab, notify,
-  } = store;
+    sources, channels, addSource, deleteSource, loadSource, updateSource,
+    tamilSourceFilter, setTamilSourceFilter,
+  } = useStore();
 
-  const [addMode,       setAddMode]       = useState<AddMode>(null);
-  const [urlInput,      setUrlInput]      = useState('');
-  const [nameInput,     setNameInput]     = useState('');
-  const [manualName,    setManualName]    = useState('');
-  const [manualUrl,     setManualUrl]     = useState('');
-  const [manualGroup,   setManualGroup]   = useState('');
-  const [addRefresh,    setAddRefresh]    = useState(0);   // auto-refresh interval for new URL/JSON sources
-  const [loading,       setLoading]       = useState<string | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [applyingModel, setApplyingModel] = useState<string | null>(null);
-  const [refreshing,    setRefreshing]    = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState<FormState>({ name: '', url: '', type: 'url', autoRefresh: false, refreshInterval: 30 });
+  const [inputMode, setInputMode] = useState<'url' | 'file'>('url');
+  const [detectedFormat, setDetectedFormat] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const intervalRefs = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
-  // ── Add URL / JSON Source ─────────────────────────────────────────────────
-  const handleAddUrl = async (type: 'url' | 'json') => {
-    if (!urlInput.trim()) return notify('Please enter a URL', 'error');
-    const source: Source = {
-      id                 : genId(),
-      name               : nameInput || urlInput.split('/').pop()?.split('?')[0] || 'New Source',
-      type,
-      url                : urlInput.trim(),
-      enabled            : true,
-      priority           : sources.length,
-      streamCount        : 0,
-      status             : 'loading',
-      autoRefreshInterval: addRefresh,
-      nextAutoRefresh    : addRefresh > 0 ? Date.now() + addRefresh * 60 * 1000 : undefined,
-    };
-    setLoading(source.id);
-    setAddMode(null);
-    setUrlInput(''); setNameInput(''); setAddRefresh(0);
-    await addSource(source);
-    setLoading(null);
+  // Auto-refresh intervals
+  useEffect(() => {
+    sources.forEach(src => {
+      if (src.autoRefresh && src.refreshInterval > 0 && src.url) {
+        if (!intervalRefs.current[src.id]) {
+          intervalRefs.current[src.id] = setInterval(() => {
+            loadSource(src.id);
+          }, src.refreshInterval * 60 * 1000);
+        }
+      } else {
+        if (intervalRefs.current[src.id]) {
+          clearInterval(intervalRefs.current[src.id]);
+          delete intervalRefs.current[src.id];
+        }
+      }
+    });
+    return () => { Object.values(intervalRefs.current).forEach(clearInterval); };
+  }, [sources, loadSource]);
+
+  const detectTypeFromUrl = (url: string): Source['type'] => {
+    const u = url.toLowerCase();
+    if (u.includes('.m3u') || u.includes('.m3u8')) return 'm3u';
+    if (u.includes('.json')) return 'json';
+    if (u.includes('.php')) return 'php';
+    return 'url';
   };
 
-  // ── File Upload ───────────────────────────────────────────────────────────
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = async (ev) => {
+    reader.onload = (ev) => {
       const content = ev.target?.result as string;
-      const isJson  = file.name.endsWith('.json') || content.trimStart().startsWith('[') || content.trimStart().startsWith('{');
-      const source: Source = {
-        id         : genId(),
-        name       : file.name.replace(/\.(m3u8?|json|txt)$/i, ''),
-        type       : isJson ? 'json' : 'file',
-        enabled    : true,
-        priority   : sources.length,
-        streamCount: 0,
-        status     : 'loading',
-        content,
-      };
-      setLoading(source.id);
-      setAddMode(null);
-      await addSource(source, content);
-      setLoading(null);
+      const ext = file.name.split('.').pop()?.toLowerCase() || 'url';
+      const detectedType: Source['type'] = ext === 'm3u' || ext === 'm3u8' ? 'm3u'
+        : ext === 'json' ? 'json' : ext === 'php' ? 'php' : 'file';
+      const fmt = detectFormat(content);
+      setDetectedFormat(fmt);
+      addSource({ name: form.name || file.name, type: detectedType, content, autoRefresh: false, refreshInterval: 30 });
+      toast.success(`✅ Loaded ${file.name} — ${fmt.toUpperCase()} format detected`);
+      setShowAdd(false);
+      resetForm();
     };
     reader.readAsText(file);
-    e.target.value = '';
   };
 
-  // ── Manual Entry ──────────────────────────────────────────────────────────
-  const handleAddManual = async () => {
-    if (!manualUrl.trim() || !manualName.trim()) return notify('Name and URL required', 'error');
-    const content = `#EXTM3U\n#EXTINF:-1 group-title="${manualGroup || 'Manual'}",${manualName}\n${manualUrl}`;
-    const source: Source = {
-      id         : genId(),
-      name       : manualName,
-      type       : 'manual',
-      enabled    : true,
-      priority   : sources.length,
-      streamCount: 1,
-      status     : 'loading',
-      content,
-    };
-    setLoading(source.id);
-    setAddMode(null);
-    setManualName(''); setManualUrl(''); setManualGroup('');
-    await addSource(source, content);
-    setLoading(null);
+  const handleSubmit = () => {
+    if (!form.name.trim()) { toast.error('Name required'); return; }
+    if (inputMode === 'url' && !form.url.trim()) { toast.error('URL required'); return; }
+    if (editId) {
+      updateSource(editId, { name: form.name, url: form.url, type: form.type, autoRefresh: form.autoRefresh, refreshInterval: form.refreshInterval });
+      toast.success('Source updated');
+      setEditId(null);
+    } else {
+      addSource({ name: form.name, url: form.url, type: form.type, autoRefresh: form.autoRefresh, refreshInterval: form.refreshInterval });
+      toast.success('🚀 Source added — fetching & parsing...');
+    }
+    resetForm();
   };
 
-  // ── Delete ────────────────────────────────────────────────────────────────
-  const handleDelete = async (id: string) => {
-    if (deleteConfirm !== id) { setDeleteConfirm(id); return; }
-    setDeleteConfirm(null);
-    await deleteSource(id);
+  const startEdit = (src: Source) => {
+    setForm({ name: src.name, url: src.url || '', type: src.type, autoRefresh: src.autoRefresh, refreshInterval: src.refreshInterval });
+    setEditId(src.id);
+    setShowAdd(true);
+    setInputMode('url');
   };
 
-  // ── Manual Refresh ────────────────────────────────────────────────────────
-  const handleRefresh = async (id: string) => {
-    setRefreshing(id);
-    await refreshSource(id);
-    setRefreshing(null);
+  const resetForm = () => {
+    setForm({ name: '', url: '', type: 'url', autoRefresh: false, refreshInterval: 30 });
+    setDetectedFormat('');
+    setEditId(null);
+    setShowAdd(false);
   };
 
-  // ── Type badge colors ─────────────────────────────────────────────────────
-  const typeColors: Record<string, string> = {
-    url   : 'bg-blue-500/20 text-blue-300 border-blue-500/30',
-    json  : 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30',
-    file  : 'bg-green-500/20 text-green-300 border-green-500/30',
-    cloud : 'bg-purple-500/20 text-purple-300 border-purple-500/30',
-    manual: 'bg-pink-500/20 text-pink-300 border-pink-500/30',
-  };
+  // Compute source-level tamil stats
+  const sourceStats = sources.map(src => {
+    const srcChannels = channels.filter(ch => ch.sourceId === src.id);
+    const tamilCount = srcChannels.filter(ch => ch.isTamil || isTamilChannel(ch)).length;
+    return { ...src, tamilCount, totalCount: srcChannels.length };
+  });
 
-  const typeIcons: Record<string, string> = {
-    url   : '🔗',
-    json  : '{}',
-    file  : '📁',
-    cloud : '☁️',
-    manual: '✏️',
-  };
+  const displayedSources = tamilSourceFilter
+    ? sourceStats.filter(s => s.tamilCount > 0)
+    : sourceStats;
 
-  const canRefresh = (src: Source) =>
-    (src.type === 'url' || src.type === 'json') && !!src.url;
+  const totalTamil = channels.filter(ch => ch.isTamil).length;
+  const totalChannels = channels.length;
 
   return (
-    <div className="space-y-6">
-
-      {/* ── Add Buttons ─────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { mode: 'url'    as AddMode, icon: '🔗', label: 'M3U URL',    color: 'from-blue-600 to-blue-700'   },
-          { mode: 'json'   as AddMode, icon: '{}', label: 'JSON URL',   color: 'from-yellow-600 to-yellow-700' },
-          { mode: 'file'   as AddMode, icon: '📁', label: 'Upload File', color: 'from-green-600 to-green-700'  },
-          { mode: 'manual' as AddMode, icon: '✏️', label: 'Manual',     color: 'from-pink-600 to-pink-700'    },
-        ].map(b => (
-          <button
-            key={b.mode}
-            onClick={() => setAddMode(addMode === b.mode ? null : b.mode)}
-            className={cn(
-              'flex items-center gap-2 px-4 py-3 rounded-xl text-white font-medium text-sm transition-all focus:outline-none focus:ring-2 focus:ring-white/30',
-              `bg-gradient-to-r ${b.color} hover:opacity-90 active:scale-95 shadow-lg`,
-              addMode === b.mode && 'ring-2 ring-white/40'
-            )}
-          >
-            <span className="text-base font-bold">{b.icon}</span>
-            <span>{b.label}</span>
-          </button>
-        ))}
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-white">Playlist Sources</h2>
+          <p className="text-gray-500 text-sm mt-0.5">
+            {sources.length} sources · {totalChannels.toLocaleString()} channels · {totalTamil.toLocaleString()} Tamil
+          </p>
+        </div>
+        <button
+          onClick={() => { setShowAdd(true); setEditId(null); setDetectedFormat(''); }}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg shadow-blue-600/20"
+        >
+          <Plus className="w-4 h-4" /> Add Source
+        </button>
       </div>
 
-      {/* ── M3U URL Form ────────────────────────────────────────────────────── */}
-      {addMode === 'url' && (
-        <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 space-y-3 animate-fadeIn">
-          <h3 className="text-white font-semibold text-lg flex items-center gap-2">🔗 Add M3U URL</h3>
-          <p className="text-gray-400 text-xs">
-            Supports M3U playlists from raw.github, pastebin, any public URL.<br/>
-            Auto-detected format: M3U or JSON.
-          </p>
-          <input value={nameInput} onChange={e => setNameInput(e.target.value)}
-            placeholder="Source name (optional)"
-            className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-600" />
-          <input value={urlInput} onChange={e => setUrlInput(e.target.value)}
-            placeholder="https://raw.githubusercontent.com/.../playlist.m3u"
-            className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-600" />
-          <div>
-            <label className="text-gray-400 text-xs mb-1 block">🔄 Auto-Refresh Interval</label>
-            <select value={addRefresh} onChange={e => setAddRefresh(Number(e.target.value))}
-              className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
-              {AUTO_REFRESH_OPTIONS.map(o => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
-          <div className="flex gap-3">
-            <button onClick={() => handleAddUrl('url')} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-lg font-medium text-sm transition-colors">
-              ✓ Add M3U Source
-            </button>
-            <button onClick={() => { setAddMode(null); setUrlInput(''); setNameInput(''); setAddRefresh(0); }}
-              className="px-5 bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg font-medium text-sm transition-colors">
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Filter Bar */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          onClick={() => setTamilSourceFilter(!tamilSourceFilter)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all border ${
+            tamilSourceFilter
+              ? 'bg-orange-500 border-orange-400 text-white shadow-lg shadow-orange-500/30'
+              : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 hover:border-orange-600 hover:text-orange-400'
+          }`}
+        >
+          <Star className={`w-4 h-4 ${tamilSourceFilter ? 'fill-white' : ''}`} />
+          🎬 Tamil Sources Only
+          <span className={`text-xs px-1.5 py-0.5 rounded-full ${tamilSourceFilter ? 'bg-orange-400 text-orange-900' : 'bg-gray-700 text-gray-400'}`}>
+            {sources.filter(s => (s.tamilCount || 0) > 0).length}
+          </span>
+        </button>
 
-      {/* ── JSON URL Form ───────────────────────────────────────────────────── */}
-      {addMode === 'json' && (
-        <div className="bg-gray-800 rounded-xl p-5 border border-yellow-700/40 space-y-3 animate-fadeIn">
-          <h3 className="text-white font-semibold text-lg flex items-center gap-2">
-            <span className="text-yellow-400 font-mono font-bold">{'{}'}</span> Add JSON Source
-          </h3>
-          <div className="bg-yellow-900/20 border border-yellow-700/30 rounded-lg p-3 text-xs text-yellow-200/80 space-y-1">
-            <div className="font-semibold text-yellow-300 mb-2">Supported JSON formats:</div>
-            <div className="font-mono bg-gray-900/60 rounded p-2 text-xs overflow-x-auto whitespace-pre">{`[
-  {
-    "name": "Star Plus",
-    "link": "https://…/index.mpd",
-    "logo": "https://…/logo.jpg",
-    "cookie": "__hdnea__=st=…",
-    "drmLicense": "kid:key",
-    "drmScheme": "clearkey"
-  }
-]`}</div>
-            <div className="mt-2 text-gray-400">Also supports: <code className="bg-gray-800 px-1 rounded">url</code>, <code className="bg-gray-800 px-1 rounded">stream</code>, <code className="bg-gray-800 px-1 rounded">category</code>, <code className="bg-gray-800 px-1 rounded">icon</code> and many more field names.</div>
-          </div>
-          <input value={nameInput} onChange={e => setNameInput(e.target.value)}
-            placeholder="Source name (optional)"
-            className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500 border border-gray-600" />
-          <input value={urlInput} onChange={e => setUrlInput(e.target.value)}
-            placeholder="https://raw.githubusercontent.com/.../channels.json"
-            className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500 border border-gray-600" />
-          <div>
-            <label className="text-gray-400 text-xs mb-1 block">🔄 Auto-Refresh Interval</label>
-            <select value={addRefresh} onChange={e => setAddRefresh(Number(e.target.value))}
-              className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-yellow-500">
-              {AUTO_REFRESH_OPTIONS.map(o => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
-          <div className="flex gap-3">
-            <button onClick={() => handleAddUrl('json')}
-              className="flex-1 bg-yellow-600 hover:bg-yellow-500 text-white py-3 rounded-lg font-medium text-sm transition-colors">
-              ✓ Add JSON Source
-            </button>
-            <button onClick={() => { setAddMode(null); setUrlInput(''); setNameInput(''); setAddRefresh(0); }}
-              className="px-5 bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg font-medium text-sm transition-colors">
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── File Upload Form ─────────────────────────────────────────────────── */}
-      {addMode === 'file' && (
-        <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 space-y-3 animate-fadeIn">
-          <h3 className="text-white font-semibold text-lg flex items-center gap-2">📁 Upload File</h3>
-          <p className="text-gray-400 text-xs">Supports .m3u, .m3u8, .json, .txt — format auto-detected.</p>
-          <input ref={fileRef} type="file" accept=".m3u,.m3u8,.json,.txt" onChange={handleFileUpload} className="hidden" />
-          <button onClick={() => fileRef.current?.click()}
-            className="w-full border-2 border-dashed border-gray-500 hover:border-green-500 text-gray-300 hover:text-white rounded-xl py-8 transition-all text-center">
-            <div className="text-3xl mb-2">📁</div>
-            <div className="font-medium">Click to choose file</div>
-            <div className="text-sm text-gray-500 mt-1">Supports .m3u, .m3u8, .json, .txt</div>
+        {tamilSourceFilter && (
+          <button
+            onClick={() => setTamilSourceFilter(false)}
+            className="flex items-center gap-1.5 px-3 py-2 bg-gray-800 border border-gray-700 text-gray-400 hover:text-white rounded-lg text-sm transition-colors"
+          >
+            <Filter className="w-3.5 h-3.5" /> Clear Filter
           </button>
-          <button onClick={() => setAddMode(null)}
-            className="w-full bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg font-medium text-sm transition-colors">
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {/* ── Manual Entry Form ────────────────────────────────────────────────── */}
-      {addMode === 'manual' && (
-        <div className="bg-gray-800 rounded-xl p-5 border border-gray-700 space-y-3 animate-fadeIn">
-          <h3 className="text-white font-semibold text-lg flex items-center gap-2">✏️ Manual Stream Entry</h3>
-          <input value={manualName} onChange={e => setManualName(e.target.value)}
-            placeholder="Channel name *"
-            className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 border border-gray-600" />
-          <input value={manualUrl} onChange={e => setManualUrl(e.target.value)}
-            placeholder="Stream URL * (http://…)"
-            className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 border border-gray-600" />
-          <input value={manualGroup} onChange={e => setManualGroup(e.target.value)}
-            placeholder="Group (optional)"
-            className="w-full bg-gray-700 text-white rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500 border border-gray-600" />
-          <div className="flex gap-3">
-            <button onClick={handleAddManual}
-              className="flex-1 bg-pink-600 hover:bg-pink-500 text-white py-3 rounded-lg font-medium text-sm transition-colors">
-              ✓ Add Channel
-            </button>
-            <button onClick={() => setAddMode(null)}
-              className="px-5 bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg font-medium text-sm transition-colors">
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Sources List ──────────────────────────────────────────────────────── */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-white font-semibold">
-            Active Sources
-            <span className="ml-2 text-gray-400 text-sm font-normal">({sources.length})</span>
-          </h3>
-          {sources.some(s => s.autoRefreshInterval && s.autoRefreshInterval > 0) && (
-            <span className="text-xs text-emerald-400 flex items-center gap-1 animate-pulse">
-              <span className="w-2 h-2 bg-emerald-400 rounded-full inline-block" />
-              Auto-refresh active
-            </span>
-          )}
-        </div>
-
-        {sources.length === 0 && (
-          <div className="text-center py-16 text-gray-500">
-            <div className="text-5xl mb-4">📡</div>
-            <div className="text-lg font-medium text-gray-400">No sources added yet</div>
-            <div className="text-sm mt-2">Add an M3U URL, JSON URL, or upload a file to get started</div>
-          </div>
         )}
+      </div>
 
-        {sources.map(src => (
-          <div key={src.id} className={cn(
-            'bg-gray-800 rounded-xl border transition-all',
-            src.enabled ? 'border-gray-700' : 'border-gray-700/30 opacity-60'
-          )}>
-            {/* ── Source Header ───────────────────────────────────────────── */}
-            <div className="flex items-start gap-3 p-4">
-              <div className="flex-1 min-w-0">
+      {/* Info Banner */}
+      <div className="bg-gray-800/60 border border-gray-700/60 rounded-xl p-4">
+        <div className="flex items-start gap-3">
+          <Zap className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-white text-sm font-medium mb-1">Auto-Detection Parser</p>
+            <p className="text-gray-400 text-xs leading-relaxed">
+              Supports <span className="text-green-400 font-mono">.m3u / .m3u8</span> (KODIPROP, EXTVLCOPT, EXTHTTP),{' '}
+              <span className="text-yellow-400 font-mono">.json</span> (JioTV, nested, hybrid),{' '}
+              <span className="text-blue-400 font-mono">.php</span> APIs, GitHub raw, Pastebin, direct URLs.
+              Tamil channels are auto-detected and tagged. DRM keys auto-extracted.
+              Sources auto-sync to server on every change.
+            </p>
+          </div>
+        </div>
+      </div>
 
-                {/* Name + type badge + status */}
-                <div className="flex items-center gap-2 flex-wrap mb-1">
-                  <span className="text-white font-medium truncate max-w-[200px]">{src.name}</span>
-                  <span className={cn('text-xs px-2 py-0.5 rounded-full border font-mono font-semibold', typeColors[src.type])}>
-                    {typeIcons[src.type]} {src.type.toUpperCase()}
-                  </span>
-                  {/* Status pill */}
-                  {src.status === 'loading' || loading === src.id ? (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 border border-yellow-500/30 animate-pulse">
-                      ⏳ Loading…
-                    </span>
-                  ) : src.status === 'error' ? (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/30" title={src.error}>
-                      ❌ Error
-                    </span>
-                  ) : (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                      ✓ {src.streamCount.toLocaleString()} streams
-                    </span>
-                  )}
-                  {/* DRM / JSON badge */}
-                  {src.type === 'json' && (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
-                      Auto-DRM
-                    </span>
-                  )}
-                </div>
+      {/* Add/Edit Form */}
+      {showAdd && (
+        <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4 shadow-xl">
+          <div className="flex items-center justify-between">
+            <h3 className="text-white font-semibold">{editId ? 'Edit Source' : 'New Source'}</h3>
+            <button onClick={resetForm} className="text-gray-400 hover:text-white transition-colors"><X className="w-4 h-4" /></button>
+          </div>
 
-                {/* URL */}
-                {src.url && (
-                  <div className="text-gray-500 text-xs truncate max-w-[420px]" title={src.url}>{src.url}</div>
-                )}
+          {!editId && (
+            <div className="flex gap-2 bg-gray-900 rounded-lg p-1 w-fit">
+              <button onClick={() => setInputMode('url')}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${inputMode === 'url' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                <Link className="w-3 h-3" /> URL / Link
+              </button>
+              <button onClick={() => setInputMode('file')}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5 ${inputMode === 'file' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                <Upload className="w-3 h-3" /> Upload File
+              </button>
+            </div>
+          )}
 
-                {/* Error message */}
-                {src.error && (
-                  <div className="text-red-400 text-xs mt-1 truncate">{src.error}</div>
-                )}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Source Name *</label>
+              <input
+                value={form.name}
+                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder="My IPTV Source"
+              />
+            </div>
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Format Override</label>
+              <select
+                value={form.type}
+                onChange={e => setForm(f => ({ ...f, type: e.target.value as Source['type'] }))}
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="url">Auto Detect</option>
+                <option value="m3u">M3U / M3U8</option>
+                <option value="json">JSON (JioTV, Generic)</option>
+                <option value="php">PHP API</option>
+              </select>
+            </div>
+          </div>
 
-                {/* Timestamps */}
-                <div className="flex items-center gap-3 mt-2 text-xs text-gray-600 flex-wrap">
-                  {src.lastUpdated && (
-                    <span>Updated: {new Date(src.lastUpdated).toLocaleString()}</span>
-                  )}
-                  {src.rawStreamCount && (
-                    <span className="text-rose-400/70">
-                      Filtered: {src.streamCount}/{src.rawStreamCount} kept
-                    </span>
-                  )}
-                </div>
-
-                {/* Auto-refresh status line */}
-                {src.autoRefreshInterval && src.autoRefreshInterval > 0 ? (
-                  <div className="flex items-center gap-2 mt-2">
-                    <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse flex-shrink-0" />
-                    <span className="text-xs text-emerald-400">
-                      Auto-refresh every {AUTO_REFRESH_OPTIONS.find(o => o.value === src.autoRefreshInterval)?.label || `${src.autoRefreshInterval}m`}
-                      {src.nextAutoRefresh && (
-                        <span className="text-gray-500 ml-2">· next {formatNextRefresh(src.nextAutoRefresh)}</span>
-                      )}
-                      {src.lastAutoRefresh && (
-                        <span className="text-gray-600 ml-2">· last {formatLastRefresh(src.lastAutoRefresh)}</span>
-                      )}
-                    </span>
-                  </div>
-                ) : null}
-
-                {/* Selection Model row */}
-                <div className="flex items-center gap-2 mt-2 flex-wrap">
-                  {src.selectionModelId ? (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1">
-                      🎯 {selectionModels.find(m => m.id === src.selectionModelId)?.name || 'Model'}
-                    </span>
-                  ) : (
-                    <span className="text-xs text-gray-600">No filter</span>
-                  )}
-                  <select
-                    value={src.selectionModelId || ''}
-                    onChange={async e => {
-                      const modelId = e.target.value || null;
-                      setApplyingModel(src.id);
-                      await applyModelToSource(src.id, modelId);
-                      setApplyingModel(null);
-                    }}
-                    disabled={applyingModel === src.id}
-                    className="text-xs bg-gray-700 text-gray-300 rounded-lg px-2 py-1 border border-gray-600 focus:outline-none focus:ring-1 focus:ring-rose-500"
-                    title="Apply channel filter model"
+          {inputMode === 'url' ? (
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">URL *</label>
+              <input
+                value={form.url}
+                onChange={e => { const url = e.target.value; setForm(f => ({ ...f, url, type: detectTypeFromUrl(url) })); }}
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder="https://raw.githubusercontent.com/... or http://server.com/playlist.m3u"
+              />
+              <p className="text-gray-500 text-xs mt-1.5 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                GitHub raw, Pastebin, direct M3U/JSON/PHP URLs. CORS proxy applied automatically.
+              </p>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {EXAMPLE_URLS.map(ex => (
+                  <button key={ex.url}
+                    onClick={() => setForm(f => ({ ...f, url: ex.url, name: f.name || ex.label, type: ex.type }))}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 text-blue-400 px-2 py-1 rounded-md transition-colors"
                   >
-                    <option value="">— Filter Model —</option>
-                    {selectionModels.map(m => (
-                      <option key={m.id} value={m.id}>
-                        {m.isBuiltIn ? '📦 ' : '✏️ '}{m.name}
-                      </option>
-                    ))}
-                  </select>
-                  {applyingModel === src.id && (
-                    <span className="text-xs text-rose-300 animate-pulse">Applying…</span>
-                  )}
-                  <button
-                    onClick={() => setActiveTab('models')}
-                    className="text-xs text-gray-600 hover:text-rose-400 transition-colors"
-                    title="Manage filter models"
-                  >
-                    🎯 Models
+                    {ex.label}
                   </button>
-                </div>
-              </div>
-
-              {/* ── Action Buttons ─────────────────────────────────────────── */}
-              <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
-
-                {/* Enable/Disable toggle */}
-                <button
-                  onClick={() => toggleSource(src.id)}
-                  className={cn(
-                    'w-11 h-6 rounded-full transition-colors relative flex-shrink-0',
-                    src.enabled ? 'bg-purple-600' : 'bg-gray-600'
-                  )}
-                  title={src.enabled ? 'Disable source' : 'Enable source'}
-                >
-                  <span className={cn(
-                    'absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow',
-                    src.enabled ? 'left-5' : 'left-0.5'
-                  )} />
-                </button>
-
-                {/* Refresh button — only for URL/JSON sources */}
-                {canRefresh(src) && (
-                  <button
-                    onClick={() => handleRefresh(src.id)}
-                    disabled={refreshing === src.id}
-                    className={cn(
-                      'p-2 rounded-lg transition-colors text-sm',
-                      refreshing === src.id
-                        ? 'bg-blue-800 text-blue-200 cursor-wait animate-pulse'
-                        : 'bg-gray-700 hover:bg-blue-700 text-gray-300 hover:text-white'
-                    )}
-                    title="Refresh source now"
-                  >
-                    {refreshing === src.id ? '⏳' : '🔄'}
-                  </button>
-                )}
-
-                {/* Delete button */}
-                <button
-                  onClick={() => handleDelete(src.id)}
-                  className={cn(
-                    'px-3 py-2 rounded-lg transition-colors text-sm font-medium',
-                    deleteConfirm === src.id
-                      ? 'bg-red-600 hover:bg-red-500 text-white animate-pulse'
-                      : 'bg-gray-700 hover:bg-red-700 text-gray-300 hover:text-white'
-                  )}
-                  title={deleteConfirm === src.id ? 'Click again to confirm delete' : 'Delete source'}
-                >
-                  {deleteConfirm === src.id ? '⚠️ Sure?' : '🗑️'}
-                </button>
+                ))}
               </div>
             </div>
+          ) : (
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Upload File</label>
+              <div
+                onClick={() => fileRef.current?.click()}
+                className="border-2 border-dashed border-gray-600 hover:border-blue-500 rounded-lg p-8 text-center cursor-pointer transition-colors group"
+              >
+                <Upload className="w-10 h-10 text-gray-500 group-hover:text-blue-400 mx-auto mb-3 transition-colors" />
+                <p className="text-gray-400 text-sm">Click to upload playlist file</p>
+                <p className="text-gray-600 text-xs mt-1">.m3u · .m3u8 · .json · .php · .txt</p>
+                <input ref={fileRef} type="file" className="hidden" accept=".m3u,.m3u8,.json,.php,.txt" onChange={handleFileUpload} />
+              </div>
+              {detectedFormat && (
+                <p className="text-green-400 text-xs mt-2 flex items-center gap-1">
+                  <CheckCircle className="w-3 h-3" /> Detected: {detectedFormat.toUpperCase()}
+                </p>
+              )}
+            </div>
+          )}
 
-            {/* ── Auto-Refresh Control Row (for URL/JSON sources) ──────────── */}
-            {canRefresh(src) && (
-              <div className="border-t border-gray-700/50 px-4 py-2.5 flex items-center gap-3 bg-gray-800/50 rounded-b-xl">
-                <span className="text-xs text-gray-500 flex-shrink-0">🔄 Auto-Refresh:</span>
-                <select
-                  value={src.autoRefreshInterval || 0}
-                  onChange={e => setAutoRefresh(src.id, Number(e.target.value))}
-                  className="text-xs bg-gray-700 text-gray-300 rounded-lg px-3 py-1.5 border border-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 flex-shrink-0"
-                >
-                  {AUTO_REFRESH_OPTIONS.map(o => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-                {src.autoRefreshInterval && src.autoRefreshInterval > 0 ? (
-                  <span className="text-xs text-emerald-400 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
-                    Active — next: {formatNextRefresh(src.nextAutoRefresh)}
-                  </span>
-                ) : (
-                  <span className="text-xs text-gray-600">Disabled — refresh manually with 🔄</span>
-                )}
+          {/* Auto Refresh */}
+          <div className="flex items-center gap-4 flex-wrap p-3 bg-gray-900/50 rounded-lg border border-gray-700/50">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={form.autoRefresh}
+                onChange={e => setForm(f => ({ ...f, autoRefresh: e.target.checked }))}
+                className="w-4 h-4 accent-blue-500" />
+              <span className="text-gray-300 text-sm flex items-center gap-1">
+                <Timer className="w-3.5 h-3.5 text-blue-400" /> Auto Refresh
+              </span>
+            </label>
+            {form.autoRefresh && (
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500 text-sm">Every</span>
+                <input type="number" min="1" max="1440" value={form.refreshInterval}
+                  onChange={e => setForm(f => ({ ...f, refreshInterval: +e.target.value }))}
+                  className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500 text-center" />
+                <span className="text-gray-500 text-sm">minutes</span>
               </div>
             )}
           </div>
-        ))}
-      </div>
+
+          {inputMode === 'url' && (
+            <div className="flex gap-2 justify-end pt-1">
+              <button onClick={resetForm} className="px-4 py-2 text-gray-400 hover:text-white text-sm transition-colors">Cancel</button>
+              <button onClick={handleSubmit}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                <Save className="w-4 h-4" /> {editId ? 'Update' : 'Add Source'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Source List */}
+      {displayedSources.length === 0 ? (
+        <div className="text-center py-20 text-gray-500">
+          <Globe className="w-14 h-14 mx-auto mb-4 opacity-20" />
+          <p className="text-lg font-medium text-gray-400 mb-2">
+            {tamilSourceFilter ? 'No Tamil sources found' : 'No sources added yet'}
+          </p>
+          <p className="text-sm">{tamilSourceFilter ? 'Add sources that contain Tamil channels' : 'Add a playlist URL or upload a file to get started'}</p>
+          {!tamilSourceFilter && (
+            <button onClick={() => setShowAdd(true)}
+              className="mt-4 inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+              <Plus className="w-4 h-4" /> Add Your First Source
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {displayedSources.map(src => (
+            <div key={src.id}
+              className={`bg-gray-800 border rounded-xl p-4 transition-all ${src.status === 'error' ? 'border-red-800/50' : 'border-gray-700'}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="mt-0.5 p-2 bg-gray-700/50 rounded-lg">
+                    {SOURCE_TYPE_ICONS[src.type] || <Globe className="w-4 h-4 text-gray-400" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-white font-medium">{src.name}</h3>
+                      <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded-full uppercase font-mono">{src.type}</span>
+                      {src.autoRefresh && (
+                        <span className="text-xs bg-blue-900/50 text-blue-400 border border-blue-800/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <Timer className="w-3 h-3" /> {src.refreshInterval}min
+                        </span>
+                      )}
+                      {(src.tamilCount || 0) > 0 && (
+                        <span className="text-xs bg-orange-500/20 text-orange-400 border border-orange-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <Star className="w-3 h-3 fill-orange-400" /> {src.tamilCount} Tamil
+                        </span>
+                      )}
+                    </div>
+                    {src.url && <p className="text-gray-500 text-xs mt-1 truncate font-mono">{src.url}</p>}
+                    {src.content && !src.url && (
+                      <p className="text-gray-500 text-xs mt-1 italic">Local file · {(src.content.length / 1024).toFixed(1)} KB</p>
+                    )}
+                    <div className="flex items-center gap-3 mt-2 flex-wrap">
+                      {src.status === 'loading' && (
+                        <span className="flex items-center gap-1.5 text-yellow-400 text-xs">
+                          <RefreshCw className="w-3 h-3 animate-spin" /> Fetching & parsing...
+                        </span>
+                      )}
+                      {src.status === 'success' && (
+                        <span className="flex items-center gap-1.5 text-green-400 text-xs">
+                          <CheckCircle className="w-3 h-3" /> {(src.channelCount || 0).toLocaleString()} channels loaded
+                          {(src.tamilCount || 0) > 0 && (
+                            <span className="text-orange-400 ml-1">· {src.tamilCount} 🎬 Tamil</span>
+                          )}
+                        </span>
+                      )}
+                      {src.status === 'error' && (
+                        <span className="flex items-center gap-1.5 text-red-400 text-xs">
+                          <XCircle className="w-3 h-3" /> {src.errorMessage}
+                        </span>
+                      )}
+                      {src.status === 'idle' && <span className="text-gray-600 text-xs">Not loaded yet</span>}
+                      {src.lastRefreshed && (
+                        <span className="flex items-center gap-1 text-gray-600 text-xs">
+                          <Clock className="w-3 h-3" /> {new Date(src.lastRefreshed).toLocaleTimeString()}
+                        </span>
+                      )}
+                    </div>
+                    {src.status === 'loading' && (
+                      <div className="mt-2 h-1 bg-gray-700 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500 rounded-full animate-pulse w-2/3" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {src.url && (
+                    <button
+                      onClick={() => { loadSource(src.id); toast.success('🔄 Refreshing source...'); }}
+                      disabled={src.status === 'loading'}
+                      title="Refresh"
+                      className="p-2 text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-50 rounded-lg hover:bg-gray-700"
+                    >
+                      <RefreshCw className={`w-4 h-4 ${src.status === 'loading' ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
+                  <button onClick={() => startEdit(src)} title="Edit"
+                    className="p-2 text-gray-400 hover:text-yellow-400 transition-colors rounded-lg hover:bg-gray-700">
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => { deleteSource(src.id); toast.success('Source removed'); }} title="Delete"
+                    className="p-2 text-gray-400 hover:text-red-400 transition-colors rounded-lg hover:bg-gray-700">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
-};
+}
