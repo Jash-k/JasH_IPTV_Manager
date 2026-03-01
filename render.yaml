@@ -6,12 +6,14 @@ services:
     region: singapore
     buildCommand: npm install && npm run build
     startCommand: node server.js
-    healthCheckPath: /api/stats
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3000
+        value: 10000
+      - key: DB_FILE
+        value: /opt/render/project/src/db.json
     disk:
       name: iptv-data
       mountPath: /opt/render/project/src

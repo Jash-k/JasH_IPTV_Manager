@@ -83,31 +83,34 @@ export default function ServerTab() {
 
   // ── server.js full source ────────────────────────────────────────────────
   const serverJsPreview = `/**
- * IPTV Playlist Manager — Full Stack Server
+ * IPTV Playlist Manager — Full Stack Server v3.0 (ES Module)
  * Deploy: Render.com | Railway | Fly.io | VPS
  *
- * Features:
- *  ✅ Live M3U playlist generation (proxy URLs)
- *  ✅ Stream redirect proxy (hides original URLs)
- *  ✅ Full stream pipe proxy (UA, Referer, Cookie)
- *  ✅ DRM: ClearKey kid:key + Widevine license forwarding
- *  ✅ CORS proxy for frontend source fetching
- *  ✅ Auto-refresh sources on schedule
- *  ✅ Full CRUD REST API
- *  ✅ Tamil channel filter
- *  ✅ Persistent JSON database
+ * ✅ ES Module syntax (import/export) — works with "type":"module"
+ * ✅ Live M3U playlist generation (proxy URLs)
+ * ✅ Stream redirect proxy (hides original URLs)
+ * ✅ Full stream pipe proxy (UA, Referer, Cookie)
+ * ✅ DRM: ClearKey kid:key + Widevine license forwarding
+ * ✅ CORS proxy for frontend source fetching
+ * ✅ Auto-refresh sources on schedule
+ * ✅ Full CRUD REST API
+ * ✅ Tamil channel filter
+ * ✅ Persistent JSON database
  */
 
-const express = require('express');
-const cors    = require('cors');
-const path    = require('path');
-const fs      = require('fs');
+// ✅ ES MODULE imports — NOT require() — compatible with "type":"module"
+import express            from 'express';
+import cors               from 'cors';
+import path               from 'path';
+import fs                 from 'fs';
+import fetch              from 'node-fetch';
+import { fileURLToPath }  from 'url';
 
-const fetch = (...args) =>
-  import('node-fetch').then(({ default: f }) => f(...args));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 const app  = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '100mb' }));
@@ -212,12 +215,14 @@ app.listen(PORT, () => console.log(\`🚀 IPTV Manager: http://localhost:\${PORT
     region: singapore
     buildCommand: npm install && npm run build
     startCommand: node server.js
-    healthCheckPath: /api/stats
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3000
+        value: 10000
+      - key: DB_FILE
+        value: /opt/render/project/src/db.json
     disk:
       name: iptv-data
       mountPath: /opt/render/project/src
@@ -271,6 +276,7 @@ git push -u origin main`,
   ];
 
   const apiDocs = [
+    { method: 'GET',    path: '/health',                      desc: '❤️ Health check endpoint (used by Render.com)' },
     { method: 'GET',    path: '/api/stats',                  desc: 'Server status, uptime, channel counts, all playlist URLs' },
     { method: 'GET',    path: '/api/playlist/:id.m3u',        desc: '🔴 LIVE M3U — proxy URLs, updates instantly when sources change' },
     { method: 'GET',    path: '/api/playlist/:id.json',       desc: 'Playlist metadata + channel count as JSON' },
@@ -612,9 +618,9 @@ git push -u origin main`,
             </h3>
             <div className="space-y-2">
               {[
-                { key: 'PORT',      val: '3000',        desc: 'Server port (Render sets this automatically)' },
-                { key: 'NODE_ENV',  val: 'production',  desc: 'Environment mode' },
-                { key: 'DB_FILE',   val: '/data/db.json', desc: 'Optional: custom DB path for persistent storage' },
+                { key: 'PORT',      val: '10000',                             desc: 'Server port — Render uses 10000 by default' },
+                { key: 'NODE_ENV',  val: 'production',                        desc: 'Environment mode' },
+                { key: 'DB_FILE',   val: '/opt/render/project/src/db.json',   desc: 'Persistent DB path on Render disk' },
               ].map(env => (
                 <div key={env.key} className="flex items-center gap-3 p-3 bg-gray-900 rounded-lg">
                   <code className="text-yellow-400 text-xs font-mono w-24 shrink-0">{env.key}</code>
