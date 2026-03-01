@@ -19,7 +19,6 @@ import express   from 'express';
 import cors      from 'cors';
 import path      from 'path';
 import fs        from 'fs';
-import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 
 // __dirname equivalent in ESM
@@ -34,7 +33,7 @@ const PORT = process.env.PORT || 10000;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({ origin: '*', methods: ['GET','POST','PUT','DELETE','OPTIONS','PATCH'] }));
-app.options('*', cors());
+app.options('(.*)', cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use(express.raw({ type: 'application/octet-stream', limit: '50mb' }));
@@ -554,7 +553,7 @@ app.get('/proxy/redirect/:id', async (req, res) => {
   if (ch.cookie)      headers['Cookie']  = ch.cookie;
   if (ch.httpHeaders) Object.assign(headers, ch.httpHeaders);
 
-  const hasCustomHeaders = !!(ch.referer || ch.cookie || (ch.httpHeaders && Object.keys(ch.httpHeaders).length > 0));
+      const hasCustomHeaders = !!(ch.referer || ch.cookie || (ch.httpHeaders && Object.keys(ch.httpHeaders).length > 0));
 
   if (hasCustomHeaders) {
     try {
@@ -563,11 +562,10 @@ app.get('/proxy/redirect/:id', async (req, res) => {
       res.setHeader('Content-Type', ct);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Cache-Control', 'no-cache');
-      // Forward content-length if present
       const cl = upstream.headers.get('content-length');
       if (cl) res.setHeader('Content-Length', cl);
-      upstream.body.pipe(res);
-      upstream.body.on('error', () => res.end());
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      res.send(buf);
     } catch (e) {
       console.error(`Proxy redirect error [${ch.name}]:`, e.message);
       res.redirect(302, ch.url);
@@ -598,8 +596,8 @@ app.get('/proxy/stream/:id', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-cache');
 
-    upstream.body.pipe(res);
-    upstream.body.on('error', () => res.end());
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.send(buf);
   } catch (err) {
     console.error(`Stream error [${ch.name}]:`, err.message);
     res.status(502).send('Upstream error: ' + err.message);
@@ -716,8 +714,8 @@ app.get('/proxy/drm/:id', async (req, res) => {
     res.setHeader('Content-Type', ct);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-cache');
-    upstream.body.pipe(res);
-    upstream.body.on('error', () => res.end());
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.send(buf);
   } catch {
     res.redirect(302, ch.url);
   }
@@ -770,7 +768,8 @@ app.post('/proxy/drm-license/:id', async (req, res) => {
       if (drmCfg.customHeaders) Object.assign(lHeaders, drmCfg.customHeaders);
 
       const resp = await safeFetch(drmCfg.licenseUrl, { method: 'POST', body, headers: lHeaders }, 15000);
-      const data = await resp.buffer();
+      const arrayBuf = await resp.arrayBuffer();
+      const data = Buffer.from(arrayBuf);
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Access-Control-Allow-Origin', '*');
       return res.send(data);
@@ -789,7 +788,8 @@ app.post('/proxy/drm-license/:id', async (req, res) => {
         body,
         headers: { 'Content-Type': 'text/xml; charset=utf-8' },
       }, 15000);
-      const data = await resp.buffer();
+      const playReadyBuf = await resp.arrayBuffer();
+      const data = Buffer.from(playReadyBuf);
       res.setHeader('Content-Type', resp.headers.get('content-type') || 'application/octet-stream');
       res.setHeader('Access-Control-Allow-Origin', '*');
       return res.send(data);
@@ -873,7 +873,7 @@ setTimeout(doAutoRefresh, 5_000);
 // ══════════════════════════════════════════════════════════════════════════════
 //  SPA FALLBACK — Serve React frontend for all non-API routes
 // ══════════════════════════════════════════════════════════════════════════════
-app.get('*', (req, res) => {
+app.get('(.*)', (req, res) => {
   const index = path.join(__dirname, 'dist', 'index.html');
   if (fs.existsSync(index)) {
     res.sendFile(index);
