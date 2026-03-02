@@ -39,9 +39,23 @@ export function generateM3U(channels: Channel[], baseUrl: string): string {
     const lang    = ch.language ? ` tvg-language="${String(ch.language).replace(/"/g,'')}"` : '';
     const country = ch.country  ? ` tvg-country="${String(ch.country).replace(/"/g,'')}"` : '';
     const name    = String(ch.name || 'Unknown').replace(/,/g, ' ');
-    const streamUrl = (ch.isDrm || ch.licenseType || ch.licenseKey)
-      ? `${baseUrl}/proxy/drm/${ch.id}`
-      : `${baseUrl}/proxy/redirect/${ch.id}`;
+    const hasDRM  = !!(ch.isDrm || ch.licenseType || ch.licenseKey);
+    const urlLower = (ch.url || '').toLowerCase();
+
+    // DRM streams → server proxy endpoint (full pipeline)
+    // Direct streams → /proxy/redirect/:id (server does 302 to original URL)
+    let streamUrl: string;
+    if (hasDRM) {
+      if (urlLower.includes('.mpd') || urlLower.includes('/dash/') || urlLower.includes('manifest.mpd'))
+        streamUrl = `${baseUrl}/live/${ch.id}.mpd`;
+      else if (urlLower.includes('.m3u8') || urlLower.includes('/hls/'))
+        streamUrl = `${baseUrl}/live/${ch.id}.m3u8`;
+      else
+        streamUrl = `${baseUrl}/live/${ch.id}.ts`;
+    } else {
+      streamUrl = `${baseUrl}/proxy/redirect/${ch.id}`;
+    }
+
     lines.push(`#EXTINF:-1${tvgId}${tvgName}${logo}${group}${lang}${country},${name}`);
     lines.push(streamUrl);
   });

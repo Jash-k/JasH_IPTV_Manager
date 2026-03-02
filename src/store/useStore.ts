@@ -30,6 +30,8 @@ interface AppState {
   tamilSourceFilter: boolean;
   searchQuery: string;
   serverUrl: string;
+  // per-source tamilFilter is stored in source.tamilFilter field
+  getSourceChannels: (sourceId: string, tamilOnly?: boolean) => Channel[];
 
   setActiveTab: (tab: TabType) => void;
   setSelectedGroup: (group: string | null) => void;
@@ -369,6 +371,13 @@ export const useStore = create<AppState>((set, get) => ({
 
   setServerUrl: (url: string) => {
     set({ serverUrl: url });
+  },
+
+  getSourceChannels: (sourceId: string, tamilOnly = false) => {
+    const { channels } = get();
+    return channels.filter(ch =>
+      ch.sourceId === sourceId && (tamilOnly ? ch.isTamil : true)
+    );
   },
 
   syncToServer: async () => {

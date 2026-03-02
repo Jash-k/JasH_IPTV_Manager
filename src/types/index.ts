@@ -54,6 +54,8 @@ export interface Source {
   errorMessage?: string;
   channelCount?: number;
   tamilCount?: number;
+  tamilFilter?: boolean;   // per-source Tamil-only filter toggle
+  healthStatus?: 'ok' | 'error' | 'checking' | 'unknown';
 }
 
 export interface PlaylistConfig {
