@@ -1,31 +1,29 @@
 FROM node:20-alpine
 
-# Install build tools for native modules
-RUN apk add --no-cache python3 make g++ git
-
 WORKDIR /app
 
-# Copy package.json only first (layer cache)
-COPY package.json ./
+# Install build dependencies
+RUN apk add --no-cache python3 make g++
 
-# Install all dependencies
-# IMPORTANT: Downgrade express to v4 to avoid path-to-regexp breaking changes in v5
+# Copy package files
+COPY package*.json ./
+
+# Install ALL deps — then force Express 4 (Express 5 breaks wildcard routes)
 RUN npm install --legacy-peer-deps && \
-    npm install --save --legacy-peer-deps \
-      express@4.21.2 \
-      cors@2.8.5
+    npm install --save express@4.21.2 cors@2.8.5 --legacy-peer-deps
 
-# Copy all project files
+# Copy source
 COPY . .
 
-# Build the Vite/React frontend → produces dist/
+# Build React frontend
 RUN npm run build
 
-# Expose the port Render uses
+# Expose port
 EXPOSE 10000
 
-ENV NODE_ENV=production
-ENV PORT=10000
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+  CMD wget -qO- http://localhost:10000/health || exit 1
 
-# Run the CommonJS server (.cjs bypasses "type":"module" in package.json)
+# Run CommonJS server (bypasses "type":"module" in package.json)
 CMD ["node", "server.cjs"]

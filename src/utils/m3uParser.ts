@@ -101,14 +101,15 @@ export function parseM3U(content: string, sourceId: string): Channel[] {
       const ch: Channel = {
         id: `${sourceId}_${channels.length}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         name, url, logo, group, tvgId, tvgName, language, country,
-        sourceId, isActive: true, order: channels.length,
+        sourceId, isActive: true, enabled: true, order: channels.length,
         streamType: detectStreamType(url),
+        status: 'unknown',
         isDrm: !!(pendingLicenseType || pendingLicenseKey),
         ...(pendingLicenseType && { licenseType: pendingLicenseType }),
-        ...(pendingLicenseKey && { licenseKey: pendingLicenseKey }),
-        ...(pendingUserAgent && { userAgent: pendingUserAgent }),
-        ...(pendingReferer && { referer: pendingReferer }),
-        ...(pendingCookie && { cookie: pendingCookie }),
+        ...(pendingLicenseKey  && { licenseKey:  pendingLicenseKey }),
+        ...(pendingUserAgent   && { userAgent:   pendingUserAgent }),
+        ...(pendingReferer     && { referer:     pendingReferer }),
+        ...(pendingCookie      && { cookie:      pendingCookie }),
         ...(Object.keys(pendingHeaders).length > 0 && { httpHeaders: { ...pendingHeaders } }),
       };
       channels.push(ch);

@@ -95,8 +95,9 @@ function parseOneStream(raw: RawJsonStream, sourceId: string, index: number): Ch
     id: `${sourceId}_json_${index}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     name, url, logo, group,
     tvgId, tvgName, language, country,
-    sourceId, isActive: true, order: index,
+    sourceId, isActive: true, enabled: true, order: index,
     streamType: detectStreamType(url),
+    status: 'unknown',
     ...drm, ...headers,
   };
   return ch;

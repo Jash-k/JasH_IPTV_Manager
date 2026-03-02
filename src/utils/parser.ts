@@ -22,21 +22,31 @@ export function parseAny(content: string, sourceId: string): Channel[] {
 }
 
 export function generateM3U(channels: Channel[], baseUrl: string): string {
-  let m3u = '#EXTM3U\n';
-  const active = channels.filter(c => c.isActive).sort((a, b) => a.order - b.order);
+  // CRITICAL: #EXTM3U must be first line, no BOM, no leading whitespace
+  const lines: string[] = [];
+  lines.push('#EXTM3U x-tvg-url=""');
+
+  // Accept channels that are enabled (enabled !== false) OR isActive — both field names used
+  const active = channels
+    .filter(c => c.enabled !== false || c.isActive === true)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
   active.forEach(ch => {
-    const logo = ch.logo ? ` tvg-logo="${ch.logo}"` : '';
-    const tvgId = ch.tvgId ? ` tvg-id="${ch.tvgId}"` : '';
-    const tvgName = ch.tvgName ? ` tvg-name="${ch.tvgName}"` : '';
-    const group = ` group-title="${ch.group}"`;
-    const lang = ch.language ? ` tvg-language="${ch.language}"` : '';
-    const country = ch.country ? ` tvg-country="${ch.country}"` : '';
-    const streamUrl = ch.isDrm
+    const tvgId   = ch.tvgId    ? ` tvg-id="${String(ch.tvgId).replace(/"/g,'')}"` : '';
+    const tvgName = ` tvg-name="${String(ch.tvgName || ch.name || '').replace(/"/g,'')}"`;
+    const logo    = ch.logo     ? ` tvg-logo="${String(ch.logo).replace(/"/g,'')}"` : '';
+    const group   = ` group-title="${String(ch.group || 'Uncategorized').replace(/"/g,'')}"`;
+    const lang    = ch.language ? ` tvg-language="${String(ch.language).replace(/"/g,'')}"` : '';
+    const country = ch.country  ? ` tvg-country="${String(ch.country).replace(/"/g,'')}"` : '';
+    const name    = String(ch.name || 'Unknown').replace(/,/g, ' ');
+    const streamUrl = (ch.isDrm || ch.licenseType || ch.licenseKey)
       ? `${baseUrl}/proxy/drm/${ch.id}`
       : `${baseUrl}/proxy/redirect/${ch.id}`;
-    m3u += `#EXTINF:-1${tvgId}${tvgName}${logo}${group}${lang}${country},${ch.name}\n${streamUrl}\n`;
+    lines.push(`#EXTINF:-1${tvgId}${tvgName}${logo}${group}${lang}${country},${name}`);
+    lines.push(streamUrl);
   });
-  return m3u;
+
+  return lines.join('\r\n') + '\r\n';
 }
 
 const TAMIL_KEYWORDS = [
@@ -60,29 +70,55 @@ export function isTamilGroup(groupName: string): boolean {
   return TAMIL_KEYWORDS.some(k => lower.includes(k)) || lower.includes('tamil');
 }
 
-export async function fetchSourceContent(url: string): Promise<string> {
-  const corsProxies = [
-    '',
-    'https://corsproxy.io/?',
-    'https://api.allorigins.win/raw?url=',
-    `${window.location.origin}/proxy/cors?url=`,
+export async function fetchSourceContent(targetUrl: string): Promise<string> {
+  // Server-side CORS proxy always goes first — it has 403 bypass with rotating UAs
+  const serverProxy = `${window.location.origin}/proxy/cors?url=`;
+
+  const proxies = [
+    serverProxy,                              // Our server — best 403 bypass
+    '',                                       // Direct (works if CORS allowed)
+    'https://corsproxy.io/?',                 // Public fallback 1
+    'https://api.allorigins.win/raw?url=',    // Public fallback 2
   ];
-  for (const proxy of corsProxies) {
+
+  let lastError: string = 'Unknown error';
+
+  for (const proxy of proxies) {
     try {
       const fetchUrl = proxy
-        ? (proxy.includes('?') ? `${proxy}${encodeURIComponent(url)}` : `${proxy}${url}`)
-        : url;
+        ? `${proxy}${encodeURIComponent(targetUrl)}`
+        : targetUrl;
+
       const res = await fetch(fetchUrl, {
-        signal: AbortSignal.timeout(20000),
-        headers: { Accept: '*/*' },
+        signal: AbortSignal.timeout(25000),
+        headers: {
+          'Accept':          '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Cache-Control':   'no-cache',
+        },
       });
-      if (!res.ok) continue;
-      const text = await res.text();
-      if (proxy.includes('allorigins')) {
-        try { const json = JSON.parse(text) as { contents?: string }; return json.contents || text; } catch { return text; }
+
+      if (!res.ok) {
+        lastError = `HTTP ${res.status} from ${proxy || 'direct'}`;
+        continue;
       }
+
+      const text = await res.text();
+
+      // allorigins wraps in JSON
+      if (proxy.includes('allorigins')) {
+        try {
+          const json = JSON.parse(text) as { contents?: string };
+          return json.contents || text;
+        } catch { return text; }
+      }
+
       return text;
-    } catch { /* try next */ }
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e);
+      // continue to next proxy
+    }
   }
-  throw new Error(`Failed to fetch: ${url}`);
+
+  throw new Error(`Failed to fetch "${targetUrl}" via all proxies. Last error: ${lastError}`);
 }

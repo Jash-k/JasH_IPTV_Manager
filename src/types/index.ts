@@ -11,7 +11,10 @@ export interface Channel {
   isDrm?: boolean;
   drmKeyId?: string;
   drmKey?: string;
+  keyId?: string;
+  key?: string;
   isActive: boolean;
+  enabled?: boolean;        // alias for isActive — used by JSON parsers
   order: number;
   sourceId: string;
   tags?: string[];
@@ -23,6 +26,7 @@ export interface Channel {
   cookie?: string;
   httpHeaders?: Record<string, string>;
   isTamil?: boolean;
+  status?: string;          // 'unknown' | 'ok' | 'error' from parsers
 }
 
 export interface Group {

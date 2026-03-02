@@ -3,17 +3,17 @@ services:
     name: iptv-manager
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: free
+    dockerContext: .
     envVars:
-      - key: NODE_ENV
-        value: production
       - key: PORT
         value: 10000
+      - key: NODE_ENV
+        value: production
       - key: DB_FILE
-        value: /opt/render/project/src/db.json
+        value: /data/db.json
     disk:
       name: iptv-db
-      mountPath: /opt/render/project/src
+      mountPath: /data
       sizeGB: 1
     healthCheckPath: /health
     autoDeploy: true
