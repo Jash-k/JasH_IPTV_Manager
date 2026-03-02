@@ -1,427 +1,567 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../store/useStore';
-import {
-  Server, Copy, Check, RefreshCw, Globe, Shield, Zap,
-  Terminal, ExternalLink, CheckCircle, AlertCircle, Clock,
-  Database, Film, Radio, Lock, Download, Upload
-} from 'lucide-react';
+
+interface ServerStats {
+  channels?: number;
+  activeChannels?: number;
+  tamilChannels?: number;
+  drmChannels?: number;
+  playlists?: number;
+  sources?: number;
+  serverVersion?: string;
+  uptime?: number;
+  playlistUrls?: Array<{ id: string; name: string; url: string; channels: number; tamil: number }>;
+}
+
+interface StreamStats {
+  ffmpeg?: { available: boolean; version: string; hwAccel: string; videoCodec: string };
+  sessions?: { total: number; active: number; viewers: number };
+  disk?: { usageMB: number; maxMB: number };
+  activeSessions?: Array<{ id: string; name: string; status: string; viewers: number; url: string }>;
+}
 
 export default function ServerTab() {
-  const { playlists, channels, drmProxies, serverUrl, setServerUrl, syncToServer } = useStore();
-  const [copied, setCopied]         = useState<string | null>(null);
-  const [syncing, setSyncing]       = useState(false);
-  const [syncResult, setSyncResult] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [serverStats, setServerStats] = useState<Record<string, unknown> | null>(null);
-  const [statsLoading, setStatsLoading] = useState(false);
-  const [editUrl, setEditUrl]       = useState(serverUrl || '');
+  const { serverUrl, channels, playlists, sources, groups, drmProxies, setServerUrl } = useStore();
+  const [stats, setStats]             = useState<ServerStats | null>(null);
+  const [streamStats, setStreamStats] = useState<StreamStats | null>(null);
+  const [syncing, setSyncing]         = useState(false);
+  const [syncMsg, setSyncMsg]         = useState('');
+  const [loading, setLoading]         = useState(false);
+  const [streamServerUrl, setStreamServerUrl] = useState('');
+  const [activeTab, setActiveTab]     = useState<'overview'|'deploy'|'api'|'drm'>('overview');
 
-  const copyText = (text: string, key: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(key);
-      setTimeout(() => setCopied(null), 2000);
-    });
-  };
+  const derivedStreamUrl = serverUrl ? serverUrl.replace(':10000', ':10001').replace(/\/$/, '') : '';
 
-  const handleSync = async () => {
-    if (!serverUrl) { setSyncResult({ ok: false, msg: 'Set server URL first.' }); return; }
-    setSyncing(true); setSyncResult(null);
-    try {
-      await syncToServer();
-      setSyncResult({ ok: true, msg: `✅ Synced ${channels.length} channels, ${playlists.length} playlists, ${drmProxies.length} DRM proxies.` });
-      fetchStats();
-    } catch (e: unknown) {
-      setSyncResult({ ok: false, msg: '❌ Sync failed: ' + (e instanceof Error ? e.message : String(e)) });
-    }
-    setSyncing(false);
-  };
+  useEffect(() => {
+    if (streamServerUrl === '' && derivedStreamUrl) setStreamServerUrl(derivedStreamUrl);
+  }, [derivedStreamUrl]);
 
   const fetchStats = async () => {
     if (!serverUrl) return;
-    setStatsLoading(true);
+    setLoading(true);
     try {
       const r = await fetch(`${serverUrl}/api/stats`);
-      if (r.ok) setServerStats(await r.json());
-    } catch { setServerStats(null); }
-    setStatsLoading(false);
+      if (r.ok) setStats(await r.json());
+    } catch {}
+
+    const sUrl = streamServerUrl || derivedStreamUrl;
+    if (sUrl) {
+      try {
+        const r2 = await fetch(`${sUrl}/api/stats`);
+        if (r2.ok) setStreamStats(await r2.json());
+      } catch {}
+    }
+    setLoading(false);
   };
 
-  useEffect(() => { if (serverUrl) fetchStats(); }, [serverUrl]);
+  useEffect(() => { fetchStats(); }, [serverUrl, streamServerUrl]);
 
-  const saveUrl = () => {
-    const trimmed = editUrl.trim().replace(/\/$/, '');
-    setServerUrl(trimmed);
+  const handleSync = async () => {
+    if (!serverUrl) { setSyncMsg('❌ Enter server URL first'); return; }
+    setSyncing(true); setSyncMsg('Syncing...');
+    try {
+      const r = await fetch(`${serverUrl}/api/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channels, playlists, sources, groups, drmProxies }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setSyncMsg(`✅ Synced! ch=${d.synced?.channels} pl=${d.synced?.playlists} drm=${d.synced?.drmProxies}`);
+        fetchStats();
+      } else setSyncMsg('❌ Sync failed: ' + JSON.stringify(d));
+    } catch(e: any) { setSyncMsg('❌ Error: ' + e.message); }
+    setSyncing(false);
   };
 
-  const tamilChannels = channels.filter(c => {
-    const hay = `${c.name} ${c.group} ${c.language || ''}`.toLowerCase();
-    return hay.includes('tamil') || hay.includes('sun tv') || hay.includes('vijay') ||
-           hay.includes('zee tamil') || hay.includes('kalaignar') || hay.includes('raj tv') ||
-           hay.includes('jaya') || hay.includes('polimer') || hay.includes('puthuyugam');
-  });
+  const copyUrl = (url: string) => { navigator.clipboard.writeText(url); };
 
-  const stats = serverStats as {
-    serverVersion?: string; uptime?: number; channels?: number;
-    activeChannels?: number; tamilChannels?: number; drmChannels?: number;
-    playlists?: number; sources?: number;
-    playlistUrls?: { id: string; name: string; url: string; tamilOnly: boolean; channels: number; tamil: number }[];
-  } | null;
+  const tabClass = (t: string) =>
+    `px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors ${
+      activeTab === t
+        ? 'border-blue-500 text-blue-400 bg-slate-800'
+        : 'border-transparent text-slate-400 hover:text-slate-200'
+    }`;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+              🚀 Full-Stack Server
+              <span className="text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full">Render Deploy</span>
+            </h2>
+            <p className="text-slate-400 text-sm mt-1">
+              Main server (redirect/DRM proxy) + Streaming server (FFmpeg/HLS)
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={fetchStats} disabled={loading}
+              className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded-lg transition-colors">
+              {loading ? '⟳' : '🔄'} Refresh
+            </button>
+            <button onClick={handleSync} disabled={syncing || !serverUrl}
+              className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg font-medium transition-colors disabled:opacity-50">
+              {syncing ? 'Syncing...' : '☁️ Sync to Server'}
+            </button>
+          </div>
+        </div>
 
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-500/20 rounded-xl">
-            <Server className="w-6 h-6 text-blue-400" />
+        {/* Server URL inputs */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-slate-400 mb-1 block">Main Server URL (port 10000)</label>
+            <div className="flex gap-2">
+              <input
+                value={serverUrl}
+                onChange={e => setServerUrl(e.target.value)}
+                placeholder="https://your-app.onrender.com"
+                className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+              />
+              <div className={`px-2 py-2 rounded-lg text-xs font-bold flex items-center ${stats ? 'bg-green-900 text-green-400' : 'bg-slate-700 text-slate-400'}`}>
+                {stats ? '🟢 Live' : '⚪ Off'}
+              </div>
+            </div>
           </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Server & Deployment</h2>
-            <p className="text-slate-400 text-sm">Full-stack IPTV server with live playlist URLs</p>
-          </div>
-        </div>
-        <button
-          onClick={fetchStats}
-          disabled={statsLoading || !serverUrl}
-          className="flex items-center gap-2 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-slate-300 transition"
-        >
-          <RefreshCw className={`w-4 h-4 ${statsLoading ? 'animate-spin' : ''}`} />
-          Refresh Stats
-        </button>
-      </div>
-
-      {/* ── Server URL Config ── */}
-      <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-        <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
-          <Globe className="w-4 h-4 text-green-400" />
-          Server URL
-        </h3>
-        <div className="flex gap-2">
-          <input
-            value={editUrl}
-            onChange={e => setEditUrl(e.target.value)}
-            placeholder="https://your-app.onrender.com"
-            className="flex-1 bg-slate-900 text-white rounded-lg px-4 py-2 border border-slate-600 focus:border-blue-500 outline-none text-sm font-mono"
-          />
-          <button
-            onClick={saveUrl}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white text-sm font-medium transition"
-          >
-            Save
-          </button>
-        </div>
-        {serverUrl && (
-          <p className="mt-2 text-green-400 text-xs font-mono">✅ {serverUrl}</p>
-        )}
-      </div>
-
-      {/* ── Live Stats ── */}
-      {stats && (
-        <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-          <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-            <Zap className="w-4 h-4 text-yellow-400" />
-            Server Stats — v{stats.serverVersion}
-            <span className="ml-auto text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">LIVE</span>
-          </h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            {[
-              { label: 'Channels',    value: stats.channels,       icon: <Radio className="w-4 h-4" />,    color: 'blue'   },
-              { label: 'Active',      value: stats.activeChannels, icon: <CheckCircle className="w-4 h-4" />, color: 'green' },
-              { label: 'Tamil',       value: stats.tamilChannels,  icon: <Globe className="w-4 h-4" />,    color: 'orange' },
-              { label: 'DRM',         value: stats.drmChannels,    icon: <Lock className="w-4 h-4" />,     color: 'purple' },
-            ].map(s => (
-              <div key={s.label} className="bg-slate-700/50 rounded-lg p-3 text-center">
-                <div className={`text-${s.color}-400 flex justify-center mb-1`}>{s.icon}</div>
-                <div className="text-2xl font-bold text-white">{s.value ?? 0}</div>
-                <div className="text-slate-400 text-xs">{s.label}</div>
+            <label className="text-xs text-slate-400 mb-1 block">Streaming Server URL (port 10001)</label>
+            <div className="flex gap-2">
+              <input
+                value={streamServerUrl}
+                onChange={e => setStreamServerUrl(e.target.value)}
+                placeholder="https://your-app.onrender.com:10001 (or separate service)"
+                className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+              />
+              <div className={`px-2 py-2 rounded-lg text-xs font-bold flex items-center ${streamStats ? 'bg-green-900 text-green-400' : 'bg-slate-700 text-slate-400'}`}>
+                {streamStats ? '🟢 Live' : '⚪ Off'}
               </div>
-            ))}
+            </div>
           </div>
-
-          {/* Playlist URLs */}
-          {(stats.playlistUrls || []).length > 0 && (
-            <div className="space-y-2">
-              <p className="text-slate-400 text-sm font-medium">📺 Live Playlist URLs</p>
-              {(stats.playlistUrls || []).map((pl) => (
-                <div key={pl.id} className="flex items-center gap-2 bg-slate-700 rounded-lg p-3">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white text-sm font-medium">{pl.name}</p>
-                    <p className="text-slate-400 text-xs font-mono truncate">{pl.url}</p>
-                    <div className="flex gap-2 mt-1">
-                      <span className="text-xs text-blue-400">{pl.channels} channels</span>
-                      {pl.tamilOnly && <span className="text-xs text-orange-400">🔶 Tamil Only</span>}
-                      {pl.tamil > 0 && <span className="text-xs text-green-400">🎯 {pl.tamil} Tamil</span>}
-                    </div>
-                  </div>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => copyText(pl.url, `pl-${pl.id}`)}
-                      className="p-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-slate-300 transition"
-                      title="Copy URL"
-                    >
-                      {copied === `pl-${pl.id}` ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-                    </button>
-                    <a
-                      href={pl.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-slate-300 transition"
-                      title="Open"
-                    >
-                      <ExternalLink className="w-4 h-4" />
-                    </a>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
-      )}
 
-      {/* ── Sync Button ── */}
-      <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-        <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
-          <RefreshCw className="w-4 h-4 text-blue-400" />
-          Push Data to Server
-        </h3>
-        <p className="text-slate-400 text-sm mb-4">
-          Sync all channels, playlists, sources, groups and DRM configs from the UI to the server.
-          The server instantly generates updated M3U playlist URLs.
-        </p>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-          {[
-            { label: 'Channels',    value: channels.length,   color: 'blue'   },
-            { label: 'Playlists',   value: playlists.length,  color: 'green'  },
-            { label: 'DRM Proxies', value: drmProxies.length, color: 'purple' },
-            { label: 'Tamil',       value: tamilChannels.length, color: 'orange' },
-          ].map(s => (
-            <div key={s.label} className="bg-slate-700/50 rounded-lg p-3 text-center">
-              <div className="text-2xl font-bold text-white">{s.value}</div>
-              <div className="text-slate-400 text-xs">{s.label}</div>
-            </div>
-          ))}
-        </div>
-        <button
-          onClick={handleSync}
-          disabled={syncing || !serverUrl}
-          className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-white font-semibold transition"
-        >
-          {syncing ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
-          {syncing ? 'Syncing…' : 'Sync to Server'}
-        </button>
-        {syncResult && (
-          <div className={`mt-3 p-3 rounded-lg text-sm ${syncResult.ok ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-            {syncResult.msg}
+        {syncMsg && (
+          <div className={`mt-3 p-2 rounded-lg text-sm ${syncMsg.startsWith('✅') ? 'bg-green-900/40 text-green-400' : 'bg-red-900/40 text-red-400'}`}>
+            {syncMsg}
           </div>
         )}
       </div>
 
-      {/* ── API Quick Reference ── */}
+      {/* Architecture Diagram */}
       <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-        <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-          <Terminal className="w-4 h-4 text-purple-400" />
-          API Reference
-        </h3>
-        <div className="space-y-2">
-          {[
-            { method: 'GET',  path: '/api/playlist/:id.m3u',      desc: 'Live M3U playlist (use in VLC/TiviMate/Kodi)',   color: 'green'  },
-            { method: 'GET',  path: '/api/playlists',             desc: 'All playlists with live URLs & channel counts',  color: 'green'  },
-            { method: 'POST', path: '/api/sync',                  desc: 'Push full state from frontend to server',        color: 'blue'   },
-            { method: 'GET',  path: '/proxy/redirect/:channelId', desc: 'Stream redirect (hides original URL)',            color: 'yellow' },
-            { method: 'GET',  path: '/proxy/stream/:channelId',   desc: 'Full stream pipe through server',                color: 'yellow' },
-            { method: 'GET',  path: '/proxy/drm/:channelId',      desc: 'DRM manifest proxy (ClearKey/Widevine)',         color: 'red'    },
-            { method: 'POST', path: '/proxy/drm-license/:id',     desc: 'DRM license endpoint (ClearKey JWK / Widevine)', color: 'red'    },
-            { method: 'GET',  path: '/proxy/cors?url=...',        desc: 'CORS proxy for source fetching',                 color: 'purple' },
-            { method: 'GET',  path: '/api/channels?tamil=1',      desc: 'Filter Tamil channels only',                    color: 'orange' },
-            { method: 'GET',  path: '/api/stats',                 desc: 'Server statistics & all playlist URLs',          color: 'slate'  },
-            { method: 'GET',  path: '/api/db/export',             desc: 'Export full database as JSON',                   color: 'slate'  },
-            { method: 'GET',  path: '/health',                    desc: 'Health check endpoint',                          color: 'green'  },
-          ].map((ep, i) => (
-            <div key={i} className="flex items-start gap-3 p-2.5 bg-slate-700/40 rounded-lg hover:bg-slate-700/70 transition">
-              <span className={`shrink-0 text-xs font-bold px-2 py-0.5 rounded font-mono
-                ${ep.method === 'GET'  ? 'bg-green-500/20 text-green-400'  :
-                  ep.method === 'POST' ? 'bg-blue-500/20  text-blue-400'   :
-                  ep.method === 'PUT'  ? 'bg-yellow-500/20 text-yellow-400' :
-                                         'bg-red-500/20   text-red-400'}`}>
-                {ep.method}
-              </span>
-              <code className="text-xs text-slate-300 font-mono flex-1 break-all">{ep.path}</code>
-              <span className="text-xs text-slate-500 hidden md:block">{ep.desc}</span>
-            </div>
-          ))}
+        <h3 className="text-white font-semibold mb-3">🏗️ Architecture</h3>
+        <div className="bg-slate-900 rounded-lg p-4 font-mono text-xs text-slate-300 overflow-x-auto">
+          <pre>{`Player (VLC / Kodi / TiviMate / IPTV Smarters)
+       │
+       ▼  M3U Playlist URL
+┌─────────────────────────────────────────────────────┐
+│           Main Server  :10000  (server.cjs)          │
+│  React UI  │  /api/*  │  /proxy/redirect/:id        │
+│            │          │  /proxy/drm/:id (manifest)  │
+│            │          │  /proxy/cors?url=...         │
+│            │          │  /api/playlist/:id.m3u       │
+└────────────┬──────────┴─────────────────────────────┘
+             │  DRM channels (needs decryption)
+             ▼
+┌─────────────────────────────────────────────────────┐
+│       DRM Streaming Server  :10001  (FFmpeg)        │
+│  /stream/start/:id  →  FFmpeg → HLS segments        │
+│  /hls-proxy/manifest/:id  →  Proxy M3U8 (no FFmpeg) │
+│  /keys/clearkey/:id  →  W3C EME ClearKey JSON       │
+│  /keys/widevine/:id  →  Widevine license proxy      │
+│  /keys/playready/:id →  PlayReady SOAP proxy        │
+│  /keys/info/:id      →  PSSH+KID inspector          │
+└─────────────────────────────────────────────────────┘`}</pre>
         </div>
       </div>
 
-      {/* ── Render Deployment Guide ── */}
-      <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-        <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-          <Terminal className="w-4 h-4 text-green-400" />
-          Deploy to Render.com — Step by Step
-        </h3>
-        <div className="space-y-4">
-          {[
-            {
-              step: '1',
-              title: 'Push to GitHub',
-              color: 'blue',
-              code: `git init\ngit add .\ngit commit -m "feat: IPTV Manager full-stack"\ngit remote add origin https://github.com/YOUR/repo.git\ngit push -u origin main`,
-            },
-            {
-              step: '2',
-              title: 'Deploy on Render',
-              color: 'purple',
-              code: `1. Go to https://render.com → New → Web Service\n2. Connect your GitHub repo\n3. Render auto-detects render.yaml → Docker runtime\n4. Click "Create Web Service"\n5. Wait ~3 minutes for build + deploy`,
-            },
-            {
-              step: '3',
-              title: 'Connect Frontend to Server',
-              color: 'green',
-              code: `1. Copy your Render URL: https://iptv-manager-xxxx.onrender.com\n2. In the app → Server Tab → paste URL → Save\n3. Click "Sync to Server"\n4. Copy playlist URL from Live Stats`,
-            },
-            {
-              step: '4',
-              title: 'Use Playlist in Player',
-              color: 'orange',
-              code: `VLC:      Media → Open Network → paste M3U URL\nTiviMate: Add playlist → paste URL\nKodi:     PVR IPTV Simple Client → M3U URL\nOTT Nav:  Add playlist → URL type → paste`,
-            },
-          ].map((s) => (
-            <div key={s.step} className={`border border-${s.color}-500/30 rounded-xl p-4 bg-${s.color}-500/5`}>
-              <div className="flex items-center gap-2 mb-2">
-                <span className={`w-7 h-7 rounded-full bg-${s.color}-500 text-white text-sm font-bold flex items-center justify-center`}>
-                  {s.step}
-                </span>
-                <h4 className="text-white font-semibold">{s.title}</h4>
-              </div>
-              <div className="relative">
-                <pre className="bg-slate-900 rounded-lg p-3 text-xs text-slate-300 font-mono overflow-x-auto whitespace-pre-wrap">{s.code}</pre>
-                <button
-                  onClick={() => copyText(s.code, `step-${s.step}`)}
-                  className="absolute top-2 right-2 p-1.5 bg-slate-700 hover:bg-slate-600 rounded text-slate-400 transition"
-                >
-                  {copied === `step-${s.step}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
-                </button>
-              </div>
-            </div>
+      {/* Tabs */}
+      <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+        <div className="flex border-b border-slate-700 px-4 pt-3 gap-1">
+          {(['overview','deploy','api','drm'] as const).map(t => (
+            <button key={t} onClick={() => setActiveTab(t)} className={tabClass(t)}>
+              {t === 'overview' ? '📊 Overview' : t === 'deploy' ? '🚀 Deploy' : t === 'api' ? '🔌 API' : '🔐 DRM'}
+            </button>
           ))}
         </div>
-      </div>
 
-      {/* ── What Server Does ── */}
-      <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-        <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-          <Shield className="w-4 h-4 text-red-400" />
-          How the Server Works
-        </h3>
-        <div className="grid md:grid-cols-2 gap-4">
-          {[
-            {
-              icon: <Film className="w-5 h-5 text-blue-400" />,
-              title: 'Live M3U Generation',
-              desc: 'Every /api/playlist/:id.m3u request generates a fresh M3U from db.json. All stream URLs are proxied through the server — original URLs are never exposed.',
-            },
-            {
-              icon: <Shield className="w-5 h-5 text-red-400" />,
-              title: 'DRM Bypass (Server-level)',
-              desc: 'ClearKey: server injects license URL into DASH/HLS manifests and serves W3C ClearKey JWK JSON. Widevine/PlayReady: server forwards challenge to real license server.',
-            },
-            {
-              icon: <Globe className="w-5 h-5 text-green-400" />,
-              title: 'CORS Proxy',
-              desc: 'All remote M3U/JSON sources are fetched server-side, bypassing CORS restrictions. Supports GitHub Raw, Gist, PHP endpoints, and direct M3U URLs.',
-            },
-            {
-              icon: <Clock className="w-5 h-5 text-yellow-400" />,
-              title: 'Auto-Refresh Sources',
-              desc: 'Server checks every 60 seconds for sources with autoRefresh enabled. If their refresh interval has elapsed, the source is re-fetched and status updated.',
-            },
-            {
-              icon: <Radio className="w-5 h-5 text-purple-400" />,
-              title: 'Tamil Filter',
-              desc: 'The server tags every channel with isTamil on sync. Use /api/channels?tamil=1 or set tamilOnly:true on a playlist to get Tamil-only M3U URLs.',
-            },
-            {
-              icon: <Database className="w-5 h-5 text-orange-400" />,
-              title: 'Persistent DB',
-              desc: 'All data is stored in db.json on Render\'s persistent disk (1GB). Data survives server restarts. Export/import via /api/db/export and /api/db/import.',
-            },
-          ].map((f, i) => (
-            <div key={i} className="flex gap-3 p-3 bg-slate-700/40 rounded-xl">
-              <div className="shrink-0 p-2 bg-slate-700 rounded-lg h-fit">{f.icon}</div>
-              <div>
-                <p className="text-white font-medium text-sm">{f.title}</p>
-                <p className="text-slate-400 text-xs mt-1 leading-relaxed">{f.desc}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+        <div className="p-5">
+          {/* OVERVIEW TAB */}
+          {activeTab === 'overview' && (
+            <div className="space-y-4">
+              {/* Main server stats */}
+              {stats ? (
+                <div>
+                  <h4 className="text-slate-300 font-semibold mb-2 text-sm">Main Server Stats</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                    {[
+                      ['📺 Channels', stats.activeChannels ?? stats.channels ?? 0],
+                      ['🇮🇳 Tamil', stats.tamilChannels ?? 0],
+                      ['🔐 DRM', stats.drmChannels ?? 0],
+                      ['📋 Playlists', stats.playlists ?? 0],
+                    ].map(([label, val]) => (
+                      <div key={String(label)} className="bg-slate-900 rounded-lg p-3 text-center">
+                        <div className="text-lg font-bold text-white">{String(val)}</div>
+                        <div className="text-xs text-slate-400">{String(label)}</div>
+                      </div>
+                    ))}
+                  </div>
 
-      {/* ── Player Setup ── */}
-      <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-        <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-          <Radio className="w-4 h-4 text-blue-400" />
-          Player Setup — Playlist URL Format
-        </h3>
-        <div className="space-y-3">
-          {serverUrl && playlists.length > 0 ? (
-            playlists.map(pl => {
-              const url = `${serverUrl}/api/playlist/${pl.id}.m3u`;
-              return (
-                <div key={pl.id} className="bg-slate-700 rounded-xl p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-white font-medium">{pl.name}</span>
-                    <div className="flex gap-1">
-                      {pl.tamilOnly && <span className="text-xs bg-orange-500/20 text-orange-400 px-2 py-0.5 rounded-full">Tamil Only</span>}
-                      <span className="text-xs bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full">
-                        {channels.filter(c => !c.group || true).length} ch
-                      </span>
+                  {/* Playlist URLs */}
+                  {stats.playlistUrls && stats.playlistUrls.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="text-slate-300 font-semibold text-sm">📋 Your Playlist URLs</h4>
+                      {stats.playlistUrls.map(pl => (
+                        <div key={pl.id} className="bg-slate-900 rounded-lg p-3 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-white text-sm font-medium">{pl.name}</div>
+                            <div className="text-blue-400 text-xs truncate">{pl.url}</div>
+                            <div className="text-slate-500 text-xs">{pl.channels} channels • {pl.tamil} Tamil</div>
+                          </div>
+                          <button onClick={() => copyUrl(pl.url)}
+                            className="px-3 py-1 bg-blue-700 hover:bg-blue-600 text-white text-xs rounded shrink-0">
+                            📋 Copy
+                          </button>
+                        </div>
+                      ))}
+                      {/* Built-in playlists */}
+                      {serverUrl && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                          {[
+                            { label: 'All Channels', url: `${serverUrl}/api/playlist/all.m3u` },
+                            { label: 'Tamil Only', url: `${serverUrl}/api/playlist/tamil.m3u` },
+                            { label: 'Kodi (all)', url: `${serverUrl}/api/playlist/all.m3u?kodi=1` },
+                            streamStats ? { label: '🎬 Stream Server (DRM)', url: `${streamServerUrl || derivedStreamUrl}/playlist/all.m3u` } : null,
+                          ].filter(Boolean).map((item: any) => (
+                            <div key={item.url} className="bg-slate-900 rounded-lg p-2 flex items-center justify-between gap-2">
+                              <div>
+                                <div className="text-slate-300 text-xs font-medium">{item.label}</div>
+                                <div className="text-blue-400 text-xs truncate max-w-xs">{item.url}</div>
+                              </div>
+                              <button onClick={() => copyUrl(item.url)}
+                                className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white text-xs rounded shrink-0">
+                                Copy
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 text-xs text-green-400 font-mono bg-slate-800 p-2 rounded-lg truncate">{url}</code>
-                    <button onClick={() => copyText(url, `player-${pl.id}`)} className="p-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-slate-300 transition">
-                      {copied === `player-${pl.id}` ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
-                    </button>
-                    <a href={url} target="_blank" rel="noopener noreferrer" className="p-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-slate-300 transition">
-                      <Download className="w-4 h-4" />
-                    </a>
-                  </div>
+                  )}
                 </div>
-              );
-            })
-          ) : (
-            <div className="text-center py-8">
-              <AlertCircle className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-              <p className="text-slate-400 text-sm">
-                {!serverUrl ? 'Set server URL above first.' : 'No playlists yet — create one in the Playlists tab.'}
-              </p>
+              ) : (
+                <div className="text-center py-8 text-slate-500">
+                  <div className="text-4xl mb-2">📡</div>
+                  <p>Enter server URL above and click Refresh</p>
+                </div>
+              )}
+
+              {/* Streaming server stats */}
+              {streamStats && (
+                <div>
+                  <h4 className="text-slate-300 font-semibold mb-2 text-sm">🎬 Streaming Server (FFmpeg)</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                    {[
+                      ['🎬 FFmpeg', streamStats.ffmpeg?.available ? '✅ '+streamStats.ffmpeg.version : '❌ Missing'],
+                      ['📡 Active', `${streamStats.sessions?.active ?? 0} sessions`],
+                      ['👁️ Viewers', streamStats.sessions?.viewers ?? 0],
+                      ['💾 Disk', `${streamStats.disk?.usageMB ?? 0} MB`],
+                    ].map(([label, val]) => (
+                      <div key={String(label)} className="bg-slate-900 rounded-lg p-3 text-center">
+                        <div className="text-sm font-bold text-white truncate">{String(val)}</div>
+                        <div className="text-xs text-slate-400">{String(label)}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {streamStats.activeSessions && streamStats.activeSessions.length > 0 && (
+                    <div className="space-y-1">
+                      <h5 className="text-slate-400 text-xs font-medium">Active Streaming Sessions:</h5>
+                      {streamStats.activeSessions.map(s => (
+                        <div key={s.id} className="bg-slate-900 rounded p-2 flex items-center justify-between text-xs">
+                          <span className="text-slate-300">{s.name}</span>
+                          <span className={`px-2 py-0.5 rounded ${s.status==='running' ? 'bg-green-900 text-green-400' : 'bg-yellow-900 text-yellow-400'}`}>
+                            {s.status} · {s.viewers} viewers
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
-        </div>
-      </div>
 
-      {/* ── Files Created ── */}
-      <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-        <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
-          <Database className="w-4 h-4 text-slate-400" />
-          Deployment Files in Repo
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {[
-            { file: 'server.cjs',    desc: 'Express 4 backend (CommonJS — works with type:module)',  badge: 'Backend'    },
-            { file: 'Dockerfile',    desc: 'Docker build: Node 20 + installs Express 4 + builds UI', badge: 'Docker'     },
-            { file: 'render.yaml',   desc: 'Render.com auto-deploy config with 1GB disk',            badge: 'Render'     },
-            { file: 'src/App.tsx',   desc: 'React frontend with full IPTV CRUD manager',             badge: 'Frontend'   },
-            { file: '.gitignore',    desc: 'Excludes node_modules, dist, db.json, logs',             badge: 'Git'        },
-            { file: 'README.md',     desc: 'Full deployment and usage documentation',                badge: 'Docs'       },
-          ].map(f => (
-            <div key={f.file} className="flex items-center gap-3 p-3 bg-slate-700/50 rounded-lg">
-              <code className="text-xs text-green-400 font-mono flex-1">{f.file}</code>
-              <span className="text-xs bg-slate-600 text-slate-300 px-2 py-0.5 rounded">{f.badge}</span>
+          {/* DEPLOY TAB */}
+          {activeTab === 'deploy' && (
+            <div className="space-y-4 text-sm">
+              <div className="bg-blue-900/30 border border-blue-700 rounded-lg p-4">
+                <h4 className="text-blue-300 font-bold mb-2">🚀 Render.com Deployment</h4>
+                <p className="text-blue-200 text-xs">
+                  Both servers run inside one Docker container via <strong>supervisord</strong>.
+                  One Render service hosts both ports (10000 + 10001).
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {[
+                  { step: '1', title: 'Push to GitHub', desc: 'git add . && git commit -m "iptv manager" && git push', code: true },
+                  { step: '2', title: 'Create Render Service', desc: 'render.com → New → Web Service → connect your repo → Runtime: Docker' },
+                  { step: '3', title: 'Auto-detected config', desc: 'render.yaml is auto-read → Docker build runs → both servers start via supervisord' },
+                  { step: '4', title: 'Sync your data', desc: 'Enter your Render URL above → click ☁️ Sync to Server' },
+                  { step: '5', title: 'Get your playlist URL', desc: 'Copy from Overview tab → paste into VLC/TiviMate/Kodi' },
+                ].map(item => (
+                  <div key={item.step} className="flex gap-3 items-start">
+                    <div className="w-7 h-7 rounded-full bg-blue-700 text-white text-xs font-bold flex items-center justify-center shrink-0">
+                      {item.step}
+                    </div>
+                    <div>
+                      <div className="text-white font-medium">{item.title}</div>
+                      {item.code ? (
+                        <code className="text-green-400 text-xs bg-slate-900 px-2 py-1 rounded block mt-1">{item.desc}</code>
+                      ) : (
+                        <div className="text-slate-400 text-xs mt-0.5">{item.desc}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="bg-slate-900 rounded-lg p-4">
+                <h4 className="text-slate-300 font-semibold mb-2 text-xs">📁 Files Created for Deployment</h4>
+                <div className="space-y-1 font-mono text-xs">
+                  {[
+                    ['Dockerfile', 'Docker image — Node 20 + FFmpeg + both servers'],
+                    ['supervisord.conf', 'Runs main-server (10000) + streaming-server (10001)'],
+                    ['render.yaml', 'Render auto-deploy config — Docker runtime + 5GB disk'],
+                    ['server.cjs', 'Main API: playlist/redirect/DRM proxy/sync'],
+                    ['streaming-server/server.js', 'FFmpeg HLS server: ClearKey/Widevine/PlayReady'],
+                    ['streaming-server/src/transcoder.js', 'FFmpeg session manager + DRM resolver'],
+                    ['streaming-server/src/drmHandler.js', 'PSSH parser + license fetcher'],
+                    ['streaming-server/src/hlsManager.js', 'HLS playlist rewriter + segment proxy'],
+                    ['streaming-server/src/routes/stream.js', 'Stream start/stop/status routes'],
+                    ['streaming-server/src/routes/keys.js', 'License endpoints: ClearKey/WV/PR/FP'],
+                  ].map(([file, desc]) => (
+                    <div key={file} className="flex gap-2">
+                      <span className="text-green-400 shrink-0">✓</span>
+                      <span className="text-blue-300">{file}</span>
+                      <span className="text-slate-500 hidden md:block">— {desc}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-3 text-xs text-amber-200">
+                <strong>⚠️ Note on Render free tier:</strong> Free services sleep after 15min inactivity.
+                For live IPTV, use <strong>Starter ($7/mo)</strong> plan with Always On enabled.
+                FFmpeg transcoding is CPU-intensive — use <strong>Standard plan</strong> for DRM streams.
+              </div>
+
+              <div className="bg-slate-900 rounded-lg p-4">
+                <h4 className="text-slate-300 font-semibold mb-2 text-xs">🔧 Environment Variables (render.yaml)</h4>
+                <div className="font-mono text-xs space-y-1 text-slate-300">
+                  {[
+                    ['PORT', '10000', 'Main server port'],
+                    ['STREAM_PORT', '10001', 'Streaming server port'],
+                    ['DB_FILE', '/data/db/db.json', 'Persistent database'],
+                    ['OUTPUT_DIR', '/data/hls-output', 'HLS segment storage'],
+                    ['VIDEO_CODEC', 'copy', '"copy" = stream copy (no re-encode, fastest)'],
+                    ['AUDIO_CODEC', 'copy', '"copy" = pass-through audio'],
+                    ['HLS_SEGMENT_TIME', '4', 'Segment duration in seconds'],
+                    ['HW_ACCEL', 'none', '"vaapi" or "nvenc" for GPU (if available)'],
+                    ['CLEARKEY_PAIRS', '', 'Default kid:key pairs (comma separated)'],
+                  ].map(([key, val, desc]) => (
+                    <div key={key} className="grid grid-cols-3 gap-2">
+                      <span className="text-blue-300">{key}</span>
+                      <span className="text-green-400">{val}</span>
+                      <span className="text-slate-500 truncate"># {desc}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
-          ))}
+          )}
+
+          {/* API TAB */}
+          {activeTab === 'api' && (
+            <div className="space-y-4 text-sm">
+              <div className="space-y-3">
+                <h4 className="text-slate-300 font-semibold">Main Server API <span className="text-slate-500 text-xs">:10000</span></h4>
+                {[
+                  ['GET', '/api/playlist/:id.m3u', 'Your custom playlist (auto-updates)'],
+                  ['GET', '/api/playlist/all.m3u', 'All channels'],
+                  ['GET', '/api/playlist/tamil.m3u', 'Tamil channels only'],
+                  ['GET', '/api/playlist/all.m3u?kodi=1', 'Kodi KODIPROP format'],
+                  ['GET', '/proxy/redirect/:id', 'Redirect to original stream with spoofed headers'],
+                  ['GET', '/proxy/drm/:id', 'Fetch + rewrite DRM manifest (MPD/HLS)'],
+                  ['POST', '/proxy/drm-license/:id', 'DRM license endpoint (ClearKey/WV/PR)'],
+                  ['GET', '/proxy/cors?url=...', 'CORS proxy for any URL'],
+                  ['POST', '/api/sync', 'Sync frontend data to server DB'],
+                  ['GET', '/api/drm/pssh/:id', 'Extract PSSH + KIDs from channel manifest'],
+                  ['GET', '/api/db/export', 'Export full DB as JSON'],
+                  ['POST', '/api/db/import', 'Import DB from JSON'],
+                ].map(([method, path, desc]) => (
+                  <div key={path} className="flex items-start gap-2 bg-slate-900 rounded p-2">
+                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                      method==='GET' ? 'bg-green-900 text-green-300' : 'bg-blue-900 text-blue-300'
+                    }`}>{method}</span>
+                    <span className="text-blue-300 font-mono text-xs shrink-0">{path}</span>
+                    <span className="text-slate-400 text-xs">{desc}</span>
+                  </div>
+                ))}
+
+                <h4 className="text-slate-300 font-semibold mt-4">Streaming Server API <span className="text-slate-500 text-xs">:10001</span></h4>
+                {[
+                  ['GET', '/stream/start/:channelId', 'Start FFmpeg session → redirect to HLS'],
+                  ['GET', '/stream/:sessionId/master.m3u8', 'Live HLS playlist (FFmpeg output)'],
+                  ['GET', '/stream/:sessionId/seg00001.ts', 'HLS segment file'],
+                  ['GET', '/stream/key/:channelId', 'AES-128 key for HLS decryption'],
+                  ['POST', '/stream/stop/:channelId', 'Stop FFmpeg transcoding'],
+                  ['GET', '/stream/sessions', 'All active streaming sessions'],
+                  ['GET', '/hls-proxy/manifest/:id?url=...', 'Proxy remote M3U8 (no FFmpeg)'],
+                  ['GET', '/hls-proxy/seg/:id?url=...', 'Proxy remote TS segment'],
+                  ['GET', '/hls-proxy/key/:id?url=...', 'Proxy remote AES key'],
+                  ['POST', '/keys/clearkey/:id', 'ClearKey W3C EME license'],
+                  ['POST', '/keys/widevine/:id', 'Widevine binary license proxy'],
+                  ['POST', '/keys/playready/:id', 'PlayReady SOAP license proxy'],
+                  ['POST', '/keys/fairplay/:id', 'FairPlay SPC→CKC proxy'],
+                  ['GET', '/keys/info/:channelId', 'PSSH + KID inspector'],
+                  ['GET', '/playlist/all.m3u', 'All channels via streaming server'],
+                  ['GET', '/playlist/tamil.m3u', 'Tamil channels via streaming server'],
+                ].map(([method, path, desc]) => (
+                  <div key={path} className="flex items-start gap-2 bg-slate-900 rounded p-2">
+                    <span className={`text-xs font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                      method==='GET' ? 'bg-green-900 text-green-300' : 'bg-blue-900 text-blue-300'
+                    }`}>{method}</span>
+                    <span className="text-blue-300 font-mono text-xs shrink-0">{path}</span>
+                    <span className="text-slate-400 text-xs">{desc}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* DRM TAB */}
+          {activeTab === 'drm' && (
+            <div className="space-y-4 text-sm">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {[
+                  {
+                    type: 'ClearKey / JioTV',
+                    icon: '🔑',
+                    color: 'green',
+                    desc: 'AES-128 / SAMPLE-AES-CTR. Inline kid:key pairs or license server.',
+                    how: [
+                      'Parse kid:key from source (JioTV: drmLicense field)',
+                      'FFmpeg -decryption_key for ClearKey HLS',
+                      'W3C EME JSON response for browser EME',
+                      'EXT-X-KEY injection in HLS output',
+                      'ContentProtection in MPD output',
+                    ],
+                    endpoint: '/keys/clearkey/:id',
+                    kodiprop: 'inputstream.adaptive.license_type=clearkey',
+                  },
+                  {
+                    type: 'Widevine',
+                    icon: '🔒',
+                    color: 'purple',
+                    desc: 'Binary protobuf challenge forwarded to real license server.',
+                    how: [
+                      'Extract PSSH box from MPD/HLS manifest',
+                      'Parse KIDs from ContentProtection',
+                      'Forward binary challenge to license URL',
+                      'Inject dashif:Laurl into MPD manifest',
+                      'Kodi CDM handles actual decryption',
+                    ],
+                    endpoint: '/keys/widevine/:id',
+                    kodiprop: 'inputstream.adaptive.license_type=com.widevine.alpha',
+                  },
+                  {
+                    type: 'PlayReady',
+                    icon: '🛡️',
+                    color: 'blue',
+                    desc: 'SOAP XML challenge forwarded to PlayReady license server.',
+                    how: [
+                      'Parse PRO header from MPD',
+                      'Extract LA_URL from PRO XML (UTF-16LE)',
+                      'Forward SOAP XML challenge to LA_URL',
+                      'Inject mspr:la_url into MPD manifest',
+                    ],
+                    endpoint: '/keys/playready/:id',
+                    kodiprop: 'inputstream.adaptive.license_type=com.microsoft.playready',
+                  },
+                  {
+                    type: 'FairPlay',
+                    icon: '🍎',
+                    color: 'orange',
+                    desc: 'SPC (Server Playback Context) to CKC (Content Key Context) proxy.',
+                    how: [
+                      'Apple HLS FairPlay streaming',
+                      'Forward SPC to certificate/license URL',
+                      'Return CKC to player',
+                    ],
+                    endpoint: '/keys/fairplay/:id',
+                    kodiprop: 'inputstream.adaptive.license_type=com.apple.fps',
+                  },
+                ].map(drmt => (
+                  <div key={drmt.type} className={`bg-slate-900 rounded-xl p-4 border border-${drmt.color}-900`}>
+                    <h4 className="text-white font-semibold mb-1">{drmt.icon} {drmt.type}</h4>
+                    <p className="text-slate-400 text-xs mb-2">{drmt.desc}</p>
+                    <ul className="space-y-0.5 mb-2">
+                      {drmt.how.map(h => (
+                        <li key={h} className="text-xs text-slate-400 flex gap-1">
+                          <span className="text-green-500">›</span>{h}
+                        </li>
+                      ))}
+                    </ul>
+                    <code className="text-xs bg-slate-800 text-blue-300 px-2 py-1 rounded block">
+                      POST {drmt.endpoint}
+                    </code>
+                    <code className="text-xs bg-slate-800 text-yellow-300 px-2 py-1 rounded block mt-1">
+                      #KODIPROP:{drmt.kodiprop}
+                    </code>
+                  </div>
+                ))}
+              </div>
+
+              <div className="bg-slate-900 rounded-xl p-4">
+                <h4 className="text-slate-300 font-semibold mb-2">🎬 FFmpeg DRM Decryption Flow</h4>
+                <div className="font-mono text-xs text-slate-300 space-y-1">
+                  <div className="text-slate-500"># ClearKey/JioTV — FFmpeg decrypts, outputs clear HLS</div>
+                  <div className="text-green-400">ffmpeg -protocol_whitelist file,http,https,tcp,tls,crypto \</div>
+                  <div className="text-green-400">  -decryption_key &lt;32-hex-key&gt; \</div>
+                  <div className="text-green-400">  -i &lt;drm-stream-url&gt; \</div>
+                  <div className="text-green-400">  -c copy \</div>
+                  <div className="text-green-400">  -hls_key_info_file enc.keyinfo \  &lt;-- re-encrypt output</div>
+                  <div className="text-green-400">  -f hls output/master.m3u8</div>
+                  <div className="mt-2 text-slate-500"># Output: AES-128 encrypted HLS (universally playable)</div>
+                  <div className="mt-1 text-slate-500"># Widevine/PlayReady: manifest rewriting only</div>
+                  <div className="text-slate-500"># (server-side WV decryption requires licensed CDM)</div>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 rounded-xl p-4">
+                <h4 className="text-slate-300 font-semibold mb-2">🔍 PSSH Inspector</h4>
+                <p className="text-slate-400 text-xs mb-2">
+                  Check PSSH boxes and KIDs for any channel's manifest:
+                </p>
+                {serverUrl ? (
+                  <a href={`${serverUrl}/api/drm/pssh/CHANNEL_ID`} target="_blank" rel="noreferrer"
+                    className="text-blue-400 text-xs underline">
+                    {serverUrl}/api/drm/pssh/CHANNEL_ID
+                  </a>
+                ) : (
+                  <code className="text-blue-400 text-xs">GET /api/drm/pssh/:channelId</code>
+                )}
+                <div className="mt-2 text-xs text-slate-400">
+                  Returns: systemId, drmType (widevine/clearkey/playready), KIDs[], psshBase64
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
-}
+};

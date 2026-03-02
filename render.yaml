@@ -1,19 +1,39 @@
 services:
+  # ── Main IPTV Manager (React frontend + Express API + DRM proxy) ─────────────
   - type: web
     name: iptv-manager
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
+    plan: starter          # upgrade to 'standard' for better FFmpeg performance
     envVars:
       - key: PORT
         value: 10000
+      - key: STREAM_PORT
+        value: 10001
       - key: NODE_ENV
         value: production
       - key: DB_FILE
-        value: /data/db.json
+        value: /data/db/db.json
+      - key: OUTPUT_DIR
+        value: /data/hls-output
+      - key: VIDEO_CODEC
+        value: copy
+      - key: AUDIO_CODEC
+        value: copy
+      - key: HLS_SEGMENT_TIME
+        value: "4"
+      - key: HLS_LIST_SIZE
+        value: "6"
+      - key: HW_ACCEL
+        value: none
+      - key: SESSION_TTL
+        value: "3600"
+      - key: CLEARKEY_PAIRS
+        value: ""           # set this to "kid1:key1,kid2:key2" if needed
     disk:
-      name: iptv-db
+      name: iptv-data
       mountPath: /data
-      sizeGB: 1
+      sizeGB: 5             # HLS segments + DB
     healthCheckPath: /health
     autoDeploy: true
