@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { Channel, Group, Source, PlaylistConfig, DrmProxy, TabType } from '../types';
-import { parseAny, generateM3U, isTamilChannel, fetchSourceContent } from '../utils/parser';
+
+import { parseAny, generateM3U, isTamilChannel } from '../utils/parser';
+import { fetchUrl as fetchSourceContent } from '../utils/fetcher';
 import { v4 as uuidv4 } from 'uuid';
 
 const BASE_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
@@ -30,8 +32,9 @@ interface AppState {
   tamilSourceFilter: boolean;
   searchQuery: string;
   serverUrl: string;
-  // per-source tamilFilter is stored in source.tamilFilter field
+  editingPlaylistId: string | null;
   getSourceChannels: (sourceId: string, tamilOnly?: boolean) => Channel[];
+  setEditingPlaylistId: (id: string | null) => void;
 
   setActiveTab: (tab: TabType) => void;
   setSelectedGroup: (group: string | null) => void;
@@ -85,7 +88,9 @@ export const useStore = create<AppState>((set, get) => ({
   tamilSourceFilter: false,
   searchQuery: '',
   serverUrl: BASE_URL,
+  editingPlaylistId: null,
 
+  setEditingPlaylistId: (id) => set({ editingPlaylistId: id }),
   setActiveTab: (tab) => set({ activeTab: tab }),
   setSelectedGroup: (group) => set({ selectedGroup: group }),
   setShowTamilOnly: (v) => set({ showTamilOnly: v }),
@@ -287,6 +292,8 @@ export const useStore = create<AppState>((set, get) => ({
       includeGroups,
       excludeGroups: [],
       tamilOnly,
+      pinnedChannels: [],
+      blockedChannels: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -311,12 +318,23 @@ export const useStore = create<AppState>((set, get) => ({
     const { playlists, channels } = get();
     const playlist = playlists.find(p => p.id === id);
     if (!playlist) return '';
+    const pinned = new Set(playlist.pinnedChannels || []);
+    const blocked = new Set(playlist.blockedChannels || []);
     const filtered = channels.filter(ch => {
+      if (blocked.has(ch.id)) return false;
+      if (pinned.has(ch.id)) return true; // always include pinned
       if (!ch.isActive) return false;
       if (playlist.tamilOnly && !ch.isTamil) return false;
       if (playlist.includeGroups.length && !playlist.includeGroups.includes(ch.group)) return false;
       if (playlist.excludeGroups.includes(ch.group)) return false;
       return true;
+    });
+    // Sort: pinned first, then by order
+    filtered.sort((a, b) => {
+      const aPinned = pinned.has(a.id) ? 0 : 1;
+      const bPinned = pinned.has(b.id) ? 0 : 1;
+      if (aPinned !== bPinned) return aPinned - bPinned;
+      return (a.order ?? 0) - (b.order ?? 0);
     });
     return generateM3U(filtered, BASE_URL);
   },

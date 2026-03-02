@@ -120,25 +120,7 @@ export function parseM3U(content: string, sourceId: string): Channel[] {
   return channels;
 }
 
-export async function fetchM3U(url: string, corsProxy: string): Promise<string> {
-  const proxies = [corsProxy, 'https://corsproxy.io/?', 'https://api.allorigins.win/raw?url='].filter(Boolean);
-  let lastError: Error | null = null;
-  try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (resp.ok) return await resp.text();
-  } catch (e) { lastError = e as Error; }
-  for (const proxy of proxies) {
-    try {
-      const proxyUrl = proxy.includes('?') ? `${proxy}${encodeURIComponent(url)}` : `${proxy}${url}`;
-      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(15000) });
-      if (resp.ok) {
-        const text = await resp.text();
-        if (proxy.includes('allorigins')) {
-          try { const json = JSON.parse(text) as { contents?: string }; return json.contents || text; } catch { return text; }
-        }
-        return text;
-      }
-    } catch (e) { lastError = e as Error; }
-  }
-  throw lastError || new Error('Failed to fetch M3U');
+export async function fetchM3U(url: string, _corsProxy?: string): Promise<string> {
+  const { fetchUrl } = await import('./fetcher');
+  return fetchUrl(url);
 }

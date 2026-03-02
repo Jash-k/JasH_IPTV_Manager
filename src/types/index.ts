@@ -14,7 +14,7 @@ export interface Channel {
   keyId?: string;
   key?: string;
   isActive: boolean;
-  enabled?: boolean;        // alias for isActive — used by JSON parsers
+  enabled?: boolean;
   order: number;
   sourceId: string;
   tags?: string[];
@@ -26,7 +26,7 @@ export interface Channel {
   cookie?: string;
   httpHeaders?: Record<string, string>;
   isTamil?: boolean;
-  status?: string;          // 'unknown' | 'ok' | 'error' from parsers
+  status?: string;
 }
 
 export interface Group {
@@ -54,7 +54,7 @@ export interface Source {
   errorMessage?: string;
   channelCount?: number;
   tamilCount?: number;
-  tamilFilter?: boolean;   // per-source Tamil-only filter toggle
+  tamilFilter?: boolean;
   healthStatus?: 'ok' | 'error' | 'checking' | 'unknown';
 }
 
@@ -66,6 +66,8 @@ export interface PlaylistConfig {
   excludeGroups: string[];
   tamilOnly?: boolean;
   filterTags?: string[];
+  pinnedChannels: string[];    // channel IDs explicitly pinned/added
+  blockedChannels: string[];   // channel IDs explicitly blocked/removed
   createdAt: string;
   updatedAt: string;
 }
@@ -83,4 +85,4 @@ export interface DrmProxy {
   notes?: string;
 }
 
-export type TabType = 'sources' | 'channels' | 'groups' | 'playlists' | 'drm' | 'server';
+export type TabType = 'sources' | 'channels' | 'groups' | 'playlists' | 'editor' | 'drm' | 'server';
