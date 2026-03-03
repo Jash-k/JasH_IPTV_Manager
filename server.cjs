@@ -269,14 +269,22 @@ function auth(req, res, next) {
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   const chs    = DB.channels || [];
-  const direct = chs.filter(c => !isDRM(c));
+  const tamil  = chs.filter(c => isTamil(c));
+  const multi  = buildCombinedMap();
   res.json({
-    status: 'ok',
-    uptime: Math.floor(process.uptime()),
-    channels: { total: chs.length, direct: direct.length, drm: 0 },
-    sources:   (DB.sources   || []).length,
-    playlists: (DB.playlists || []).length,
-    ts: new Date().toISOString(),
+    status    : 'ok',
+    uptime    : Math.floor(process.uptime()),
+    channels  : chs.length,
+    direct    : chs.length,
+    drm       : 0,
+    tamil     : tamil.length,
+    multiSource: Object.values(multi).filter(g => g.length > 1).length,
+    sources   : (DB.sources   || []).length,
+    playlists : (DB.playlists || []).length,
+    groups    : (DB.groups    || []).length,
+    keepalive : !!(SELF_URL && !SELF_URL.includes('localhost')),
+    version   : '12.0',
+    ts        : new Date().toISOString(),
   });
 });
 

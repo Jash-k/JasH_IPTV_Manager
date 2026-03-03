@@ -1,23 +1,21 @@
 import { Toaster } from 'react-hot-toast';
 import { useStore } from './store/useStore';
-import SourcesTab from './components/SourcesTab';
-import ChannelsTab from './components/ChannelsTab';
-import GroupsTab from './components/GroupsTab';
+import SourcesTab   from './components/SourcesTab';
+import ChannelsTab  from './components/ChannelsTab';
+import GroupsTab    from './components/GroupsTab';
 import PlaylistsTab from './components/PlaylistsTab';
-import PlaylistEditor from './components/PlaylistEditor';
-import ServerTab from './components/ServerTab';
+import ServerTab    from './components/ServerTab';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { Tv2, Database, Layers, List, Server, Menu, X, Star, Edit3 } from 'lucide-react';
+import { Tv2, Database, Layers, List, Server, Menu, X, Star } from 'lucide-react';
 import { useState } from 'react';
 import { TabType } from './types';
 
 const TABS: { id: TabType; label: string; icon: React.ReactNode; color: string }[] = [
-  { id: 'sources',   label: 'Sources',        icon: <Database className="w-4 h-4" />, color: 'text-blue-400'   },
-  { id: 'channels',  label: 'Channels',        icon: <Tv2      className="w-4 h-4" />, color: 'text-green-400'  },
-  { id: 'groups',    label: 'Groups',          icon: <Layers   className="w-4 h-4" />, color: 'text-yellow-400' },
-  { id: 'playlists', label: 'Playlists',       icon: <List     className="w-4 h-4" />, color: 'text-purple-400' },
-  { id: 'editor',    label: 'Playlist Editor', icon: <Edit3    className="w-4 h-4" />, color: 'text-pink-400'   },
-  { id: 'server',    label: 'Server',          icon: <Server   className="w-4 h-4" />, color: 'text-orange-400' },
+  { id: 'sources',   label: 'Sources',   icon: <Database className="w-4 h-4" />, color: 'text-blue-400'   },
+  { id: 'channels',  label: 'Channels',  icon: <Tv2      className="w-4 h-4" />, color: 'text-green-400'  },
+  { id: 'groups',    label: 'Groups',    icon: <Layers   className="w-4 h-4" />, color: 'text-yellow-400' },
+  { id: 'playlists', label: 'Playlists', icon: <List     className="w-4 h-4" />, color: 'text-purple-400' },
+  { id: 'server',    label: 'Server',    icon: <Server   className="w-4 h-4" />, color: 'text-orange-400' },
 ];
 
 export default function App() {
@@ -25,7 +23,6 @@ export default function App() {
     activeTab, setActiveTab,
     channels, sources, playlists,
     showTamilOnly, setShowTamilOnly,
-    editingPlaylistId, setEditingPlaylistId,
   } = useStore();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -36,21 +33,13 @@ export default function App() {
 
   const tamilCount     = safeChannels.filter(c => c.isTamil).length;
   const activeChannels = safeChannels.filter(c => c.isActive).length;
-  const editingPlaylist = safePlaylists.find(p => p.id === editingPlaylistId);
-
-  const openEditor = (playlistId: string) => {
-    setEditingPlaylistId(playlistId);
-    setActiveTab('editor');
-    setSidebarOpen(false);
-  };
 
   const renderTab = () => {
     switch (activeTab) {
       case 'sources':   return <SourcesTab />;
       case 'channels':  return <ChannelsTab />;
       case 'groups':    return <GroupsTab />;
-      case 'playlists': return <PlaylistsTab onEditPlaylist={openEditor} />;
-      case 'editor':    return <PlaylistEditor />;
+      case 'playlists': return <PlaylistsTab />;
       case 'server':    return <ServerTab />;
       default:          return <SourcesTab />;
     }
@@ -152,19 +141,12 @@ export default function App() {
             {TABS.map(tab => (
               <button
                 key={tab.id}
-                onClick={() => {
-                  if (tab.id === 'editor' && !editingPlaylistId) {
-                    setActiveTab('playlists');
-                  } else {
-                    setActiveTab(tab.id);
-                  }
-                  setSidebarOpen(false);
-                }}
+                onClick={() => { setActiveTab(tab.id); setSidebarOpen(false); }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                   activeTab === tab.id
                     ? 'bg-gray-800 text-white shadow-sm'
                     : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-                } ${tab.id === 'editor' && !editingPlaylistId ? 'opacity-50' : ''}`}
+                }`}
               >
                 <span className={activeTab === tab.id ? tab.color : ''}>{tab.icon}</span>
                 <span className="flex-1 text-left">{tab.label}</span>
@@ -184,9 +166,9 @@ export default function App() {
                     {safePlaylists.length}
                   </span>
                 )}
-                {tab.id === 'editor' && editingPlaylist && (
-                  <span className="text-xs bg-pink-900/60 text-pink-400 px-1.5 py-0.5 rounded-full max-w-[60px] truncate">
-                    {editingPlaylist.name}
+                {tab.id === 'groups' && (
+                  <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">
+                    {useStore.getState().groups.length}
                   </span>
                 )}
               </button>
@@ -253,20 +235,6 @@ export default function App() {
                   <h2 className="text-white font-semibold text-lg">{currentTab.label}</h2>
                 </>
               )}
-
-              {activeTab === 'editor' && editingPlaylist && (
-                <>
-                  <span className="text-gray-600">/</span>
-                  <span className="text-pink-400 font-medium text-sm">{editingPlaylist.name}</span>
-                  <button
-                    onClick={() => setActiveTab('playlists')}
-                    className="ml-auto text-xs text-gray-500 hover:text-white flex items-center gap-1 transition-colors"
-                  >
-                    ← Back to Playlists
-                  </button>
-                </>
-              )}
-
               {showTamilOnly && activeTab === 'channels' && (
                 <span className="flex items-center gap-1 text-xs bg-orange-500/20 text-orange-400 border border-orange-500/30 px-2.5 py-1 rounded-full font-semibold">
                   <Star className="w-3 h-3 fill-orange-400" /> Tamil Filter ON
@@ -279,21 +247,13 @@ export default function App() {
               {TABS.map(tab => (
                 <button
                   key={tab.id}
-                  onClick={() => {
-                    if (tab.id === 'editor' && !editingPlaylistId) {
-                      setActiveTab('playlists');
-                      return;
-                    }
-                    setActiveTab(tab.id);
-                  }}
+                  onClick={() => setActiveTab(tab.id)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
                     activeTab === tab.id ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'
-                  } ${tab.id === 'editor' && !editingPlaylistId ? 'opacity-40' : ''}`}
+                  }`}
                 >
                   <span className={activeTab === tab.id ? tab.color : ''}>{tab.icon}</span>
-                  {tab.id === 'editor'
-                    ? (editingPlaylist ? editingPlaylist.name.slice(0, 8) + '…' : 'Editor')
-                    : tab.label}
+                  {tab.label}
                 </button>
               ))}
             </div>

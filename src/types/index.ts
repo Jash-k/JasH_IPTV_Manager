@@ -78,5 +78,5 @@ export interface PlaylistConfig {
   updatedAt: string;
 }
 
-// TabType — NO drm tab
-export type TabType = 'sources' | 'channels' | 'groups' | 'playlists' | 'editor' | 'server';
+// TabType — no drm, no editor
+export type TabType = 'sources' | 'channels' | 'groups' | 'playlists' | 'server';
