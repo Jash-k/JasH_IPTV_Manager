@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { useStore } from './store/useStore';
 import SourcesTab   from './components/SourcesTab';
@@ -6,8 +7,10 @@ import GroupsTab    from './components/GroupsTab';
 import PlaylistsTab from './components/PlaylistsTab';
 import ServerTab    from './components/ServerTab';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { Tv2, Database, Layers, List, Server, Menu, X, Star } from 'lucide-react';
-import { useState } from 'react';
+import {
+  Tv2, Database, Layers, List, Server,
+  Menu, X, Star, RefreshCw,
+} from 'lucide-react';
 import { TabType } from './types';
 
 const TABS: { id: TabType; label: string; icon: React.ReactNode; color: string }[] = [
@@ -19,20 +22,48 @@ const TABS: { id: TabType; label: string; icon: React.ReactNode; color: string }
 ];
 
 export default function App() {
+  const store = useStore();
   const {
     activeTab, setActiveTab,
-    channels, sources, playlists,
+    channels, sources, playlists, groups,
     showTamilOnly, setShowTamilOnly,
-  } = useStore();
+    serverUrl, hydrated,
+    loadFromServer,
+  } = store;
 
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen]   = useState(false);
+  const [serverLoading, setServerLoading] = useState(false);
+  const [startupDone, setStartupDone]   = useState(false);
+
+  // ── On mount: load from server and merge with localStorage ───────────────
+  useEffect(() => {
+    if (startupDone) return;
+    setStartupDone(true);
+
+    const run = async () => {
+      setServerLoading(true);
+      try {
+        await loadFromServer(serverUrl || window.location.origin);
+      } catch {
+        // fall through — localStorage data already in state via persist
+      } finally {
+        setServerLoading(false);
+      }
+    };
+
+    // Small delay so Zustand persist can rehydrate from localStorage first
+    const timer = setTimeout(run, 300);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const safeChannels  = Array.isArray(channels)  ? channels  : [];
   const safeSources   = Array.isArray(sources)   ? sources   : [];
   const safePlaylists = Array.isArray(playlists) ? playlists : [];
+  const safeGroups    = Array.isArray(groups)    ? groups    : [];
 
   const tamilCount     = safeChannels.filter(c => c.isTamil).length;
-  const activeChannels = safeChannels.filter(c => c.isActive).length;
+  const activeChannels = safeChannels.filter(c => c.isActive !== false).length;
 
   const renderTab = () => {
     switch (activeTab) {
@@ -47,19 +78,47 @@ export default function App() {
 
   const currentTab = TABS.find(t => t.id === activeTab);
 
+  // ── Startup loading screen ────────────────────────────────────────────────
+  if (!hydrated && serverLoading) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600
+                          flex items-center justify-center mx-auto shadow-2xl">
+            <Tv2 className="w-8 h-8 text-white" />
+          </div>
+          <div>
+            <h1 className="text-white font-bold text-xl">IPTV Manager</h1>
+            <p className="text-gray-400 text-sm mt-1">Restoring your data...</p>
+          </div>
+          <div className="flex items-center justify-center gap-2 text-blue-400 text-sm">
+            <RefreshCw className="w-4 h-4 animate-spin" />
+            <span>Syncing with server...</span>
+          </div>
+          <div className="text-gray-600 text-xs">
+            {safeChannels.length > 0
+              ? `Loaded ${safeChannels.length} channels from local cache`
+              : 'Loading...'}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col">
       <Toaster
         position="top-right"
         toastOptions={{
-          style: { background: '#1f2937', color: '#fff', border: '1px solid #374151' },
+          style  : { background: '#1f2937', color: '#fff', border: '1px solid #374151' },
           success: { iconTheme: { primary: '#4ade80', secondary: '#1f2937' } },
-          error:   { iconTheme: { primary: '#f87171', secondary: '#1f2937' } },
+          error  : { iconTheme: { primary: '#f87171', secondary: '#1f2937' } },
         }}
       />
 
-      {/* ── Top Header ─────────────────────────────────────────────────── */}
-      <header className="border-b border-gray-800 bg-gray-900 px-4 py-3 flex items-center justify-between shrink-0 z-50">
+      {/* ── Top Header ──────────────────────────────────────────────────────── */}
+      <header className="border-b border-gray-800 bg-gray-900 px-4 py-3
+                         flex items-center justify-between shrink-0 z-50">
         <div className="flex items-center gap-3">
           <button
             onClick={() => setSidebarOpen(o => !o)}
@@ -68,13 +127,14 @@ export default function App() {
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600
+                            flex items-center justify-center shadow-lg">
               <Tv2 className="w-4 h-4 text-white" />
             </div>
             <div>
               <h1 className="text-white font-bold text-sm leading-none">IPTV Manager</h1>
               <p className="text-gray-500 text-xs leading-none mt-0.5">
-                302 Redirect · Tamil Filter · Multi-Source
+                302 Redirect · Tamil Filter · Persistent
               </p>
             </div>
           </div>
@@ -97,13 +157,22 @@ export default function App() {
             </span>
           </div>
 
+          {/* Server sync indicator */}
+          {serverLoading && (
+            <div className="flex items-center gap-1.5 text-blue-400 text-xs">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              <span className="hidden sm:inline">Syncing...</span>
+            </div>
+          )}
+
           {tamilCount > 0 && (
             <button
               onClick={() => {
                 setShowTamilOnly(!showTamilOnly);
                 if (activeTab !== 'channels') setActiveTab('channels');
               }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs
+                          font-semibold transition-all border ${
                 showTamilOnly
                   ? 'bg-orange-500 border-orange-400 text-white shadow-lg shadow-orange-500/30'
                   : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-orange-600 hover:text-orange-400'
@@ -127,7 +196,7 @@ export default function App() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* ── Sidebar ──────────────────────────────────────────────────── */}
+        {/* ── Sidebar ─────────────────────────────────────────────────────── */}
         <aside className={`
           fixed inset-y-0 left-0 z-40 w-56 bg-gray-900 border-r border-gray-800 pt-16
           flex flex-col transition-transform duration-200
@@ -135,14 +204,16 @@ export default function App() {
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}>
           <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-            <p className="text-gray-600 text-xs font-semibold uppercase tracking-wider px-3 mb-3 mt-2">
+            <p className="text-gray-600 text-xs font-semibold uppercase tracking-wider
+                          px-3 mb-3 mt-2">
               Navigation
             </p>
             {TABS.map(tab => (
               <button
                 key={tab.id}
                 onClick={() => { setActiveTab(tab.id); setSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg
+                            text-sm font-medium transition-all ${
                   activeTab === tab.id
                     ? 'bg-gray-800 text-white shadow-sm'
                     : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
@@ -153,7 +224,7 @@ export default function App() {
 
                 {tab.id === 'channels' && safeChannels.length > 0 && (
                   <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">
-                    {safeChannels.length}
+                    {safeChannels.length.toLocaleString()}
                   </span>
                 )}
                 {tab.id === 'sources' && safeSources.length > 0 && (
@@ -166,9 +237,9 @@ export default function App() {
                     {safePlaylists.length}
                   </span>
                 )}
-                {tab.id === 'groups' && (
+                {tab.id === 'groups' && safeGroups.length > 0 && (
                   <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">
-                    {useStore.getState().groups.length}
+                    {safeGroups.length}
                   </span>
                 )}
               </button>
@@ -184,7 +255,8 @@ export default function App() {
                   setActiveTab('channels');
                   setSidebarOpen(false);
                 }}
-                className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+                className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg
+                            text-sm font-semibold transition-all ${
                   showTamilOnly
                     ? 'bg-orange-500 text-white'
                     : 'bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20'
@@ -193,7 +265,9 @@ export default function App() {
                 <Star className={`w-4 h-4 ${showTamilOnly ? 'fill-white' : 'fill-orange-400'}`} />
                 🎬 Tamil
                 <span className={`ml-auto text-xs px-1.5 py-0.5 rounded-full font-bold ${
-                  showTamilOnly ? 'bg-orange-400 text-orange-900' : 'bg-orange-500/20 text-orange-400'
+                  showTamilOnly
+                    ? 'bg-orange-400 text-orange-900'
+                    : 'bg-orange-500/20 text-orange-400'
                 }`}>
                   {tamilCount}
                 </span>
@@ -201,15 +275,27 @@ export default function App() {
             </div>
           )}
 
-          {/* Sidebar footer */}
+          {/* Sidebar footer — persistence status */}
           <div className="p-4 border-t border-gray-800">
-            <div className="bg-gray-800 rounded-lg p-3">
-              <p className="text-xs text-gray-400 font-medium mb-1">Auto-Sync</p>
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                <span className="text-green-400 text-xs">Active</span>
+            <div className="bg-gray-800 rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-gray-400 font-medium">Persistence</p>
+                <div className="flex items-center gap-1">
+                  <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                  <span className="text-green-400 text-xs">localStorage ✓</span>
+                </div>
               </div>
-              <p className="text-gray-600 text-xs truncate font-mono mt-1">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-gray-500">Server sync</p>
+                {serverLoading ? (
+                  <span className="text-blue-400 text-xs flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3 animate-spin" /> syncing
+                  </span>
+                ) : (
+                  <span className="text-green-400 text-xs">auto ✓</span>
+                )}
+              </div>
+              <p className="text-gray-600 text-xs truncate font-mono">
                 {window.location.host}
               </p>
             </div>
@@ -224,7 +310,7 @@ export default function App() {
           />
         )}
 
-        {/* ── Main Content ─────────────────────────────────────────────── */}
+        {/* ── Main Content ─────────────────────────────────────────────────── */}
         <main className="flex-1 overflow-y-auto">
           {/* Tab header */}
           <div className="sticky top-0 z-20 bg-gray-950 border-b border-gray-800 px-6 py-4">
@@ -236,7 +322,9 @@ export default function App() {
                 </>
               )}
               {showTamilOnly && activeTab === 'channels' && (
-                <span className="flex items-center gap-1 text-xs bg-orange-500/20 text-orange-400 border border-orange-500/30 px-2.5 py-1 rounded-full font-semibold">
+                <span className="flex items-center gap-1 text-xs bg-orange-500/20
+                                 text-orange-400 border border-orange-500/30
+                                 px-2.5 py-1 rounded-full font-semibold">
                   <Star className="w-3 h-3 fill-orange-400" /> Tamil Filter ON
                 </span>
               )}
@@ -248,8 +336,11 @@ export default function App() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
-                    activeTab === tab.id ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white'
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs
+                              font-medium whitespace-nowrap transition-colors ${
+                    activeTab === tab.id
+                      ? 'bg-gray-800 text-white'
+                      : 'text-gray-400 hover:text-white'
                   }`}
                 >
                   <span className={activeTab === tab.id ? tab.color : ''}>{tab.icon}</span>

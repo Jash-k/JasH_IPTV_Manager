@@ -613,8 +613,20 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
-/** DB dump */
-app.get('/api/db', auth, (req, res) => res.json(DB));
+/** Full DB dump — used by frontend loadFromServer() on startup */
+app.get('/api/db', (req, res) => {
+  // Allow without auth key so frontend can load on first visit
+  // (data is read-only, no sensitive info exposed)
+  res.setHeader('Cache-Control', 'no-cache, no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.json({
+    channels  : DB.channels  || [],
+    sources   : DB.sources   || [],
+    groups    : DB.groups    || [],
+    playlists : DB.playlists || [],
+    ts        : Date.now(),
+  });
+});
 
 /** Channel list */
 app.get('/api/channels', (req, res) => {

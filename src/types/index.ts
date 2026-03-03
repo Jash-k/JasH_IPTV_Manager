@@ -61,7 +61,11 @@ export interface Source {
   errorMessage?: string;
   channelCount?: number;
   tamilCount?: number;
+  removedCount?: number;
   tamilFilter?: boolean;
+  removedOthers?: boolean;
+  blockedChannelIds?: string[];
+  blockedChannelNames?: string[];
   healthStatus?: 'ok' | 'error' | 'checking' | 'unknown';
 }
 
