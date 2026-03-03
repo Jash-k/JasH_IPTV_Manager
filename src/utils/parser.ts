@@ -1,116 +1,199 @@
-import { Channel } from '../types';
-import { parseM3U } from './m3uParser';
-import { parseJsonSource, looksLikeJson } from './jsonParser';
+/**
+ * parser.ts — Central parsing + M3U generation
+ * Uses universalParse for all source imports
+ */
 
-export { parseM3U } from './m3uParser';
-export { parseJsonSource, looksLikeJson, isJsonUrl } from './jsonParser';
+import { Channel, PlaylistConfig, Source } from '../types';
+import { universalParse, isTamilChannel } from './universalParser';
 
-export function detectFormat(content: string): 'm3u' | 'json' | 'unknown' {
-  const t = content.trim();
-  if (t.startsWith('#EXTM3U') || t.startsWith('#EXTINF') || t.includes('#EXTINF')) return 'm3u';
-  if (looksLikeJson(t)) return 'json';
-  return 'unknown';
-}
+export { isTamilChannel };
 
-export function parseAny(content: string, sourceId: string): Channel[] {
-  const fmt = detectFormat(content);
-  if (fmt === 'm3u') return parseM3U(content, sourceId);
-  if (fmt === 'json') return parseJsonSource(content, sourceId);
-  try { return parseM3U(content, sourceId); } catch { /* */ }
-  try { return parseJsonSource(content, sourceId); } catch { /* */ }
-  return [];
-}
+// ─── Robust URL fetcher ───────────────────────────────────────────────────────
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// ── DRM check — uses raw object fields (before stripping) ────────────────────
-export function isDRMChannel(ch: Record<string, unknown>): boolean {
-  return !!(ch.licenseType || ch.licenseKey || ch.drmKey || ch.drmKeyId || ch.isDrm);
-}
-
-// ── M3U Generator — pure 302 redirect, NO DRM logic ──────────────────────────
-export function generateM3U(channels: Channel[], baseUrl: string): string {
-  const lines: string[] = [];
-  lines.push('#EXTM3U x-tvg-url=""');
-
-  const esc = (s: unknown) =>
-    String(s || '').replace(/"/g, "'").replace(/[\r\n]/g, ' ');
-
-  const normKey = (n: string) =>
-    String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
-
-  // Only direct (non-DRM) channels
-  const active = channels
-    .filter(c => {
-      if (c.enabled === false || c.isActive === false) return false;
-      return true;
-    })
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-  // Count occurrences of each normalized name for multi-source detection
-  const nameCount: Record<string, number> = {};
-  active.forEach(ch => {
-    const k = normKey(ch.name);
-    nameCount[k] = (nameCount[k] || 0) + 1;
-  });
-
-  const seen = new Set<string>();
-
-  active.forEach(ch => {
-    const key     = normKey(ch.name);
-    const isMulti = (nameCount[key] || 0) > 1;
-
-    // For multi-source channels, only emit one entry (the first encountered)
-    if (isMulti && seen.has(key)) return;
-    seen.add(key);
-
-    const tvgId   = ch.tvgId    ? ` tvg-id="${esc(ch.tvgId)}"`          : '';
-    const tvgName = ` tvg-name="${esc(ch.tvgName || ch.name)}"`;
-    const logo    = ch.logo     ? ` tvg-logo="${esc(ch.logo)}"`          : '';
-    const group   = ` group-title="${esc(ch.group || 'Uncategorized')}"`;
-    const lang    = ch.language ? ` tvg-language="${esc(ch.language)}"` : '';
-    const country = ch.country  ? ` tvg-country="${esc(ch.country)}"`   : '';
-    const tamil   = ch.isTamil  ? ` x-tamil="true"`                     : '';
-    const multi   = isMulti     ? ` x-multi-source="true" x-link-count="${nameCount[key]}"` : '';
-    const name    = esc(ch.name || 'Unknown');
-
-    // ALL streams → pure 302 redirect (no proxy, no DRM)
-    const streamUrl = isMulti
-      ? `${baseUrl}/redirect/best/${encodeURIComponent(ch.name)}`
-      : `${baseUrl}/redirect/${ch.id}`;
-
-    lines.push(
-      `#EXTINF:-1${tvgId}${tvgName}${logo}${group}${lang}${country}${tamil}${multi},${name}`
-    );
-    lines.push(streamUrl);
-    lines.push('');
-  });
-
-  return lines.join('\r\n');
-}
-
-// ── Tamil detection ───────────────────────────────────────────────────────────
-const TAMIL_KEYWORDS = [
-  'tamil', 'sun tv', 'vijay', 'zee tamil', 'kalaignar', 'puthiya thalaimurai',
-  'news18 tamil', 'polimer', 'jaya', 'raj tv', 'captain tv', 'vendhar',
-  'vasanth tv', 'adithya tv', 'mega tv', 'thanthi', 'sathiyam', 'sirippoli',
-  'chutti tv', 'isai aruvi', 'makkal tv', 'zee thirai', 'dd tamil',
-  'doordarshan tamil', 'imayam', 'sun music', 'star vijay', 'colors tamil',
-  'news7 tamil', 'tamilnadu', 'madurai', 'coimbatore', 'et now tamil',
-  'cnbc tamil', 'kaveri', 'rain bow', 'rainbow', 'vikatan', 'nakkheeran',
-  'kollywood', 'tamizh',
+const CORS_PROXIES = [
+  (u: string) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  (u: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  (u: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
 ];
 
-export function isTamilChannel(ch: Channel): boolean {
-  const str = (v: unknown) => (typeof v === 'string' ? v : String(v ?? ''));
-  const lower = [
-    str(ch.name), str(ch.group), str(ch.language),
-    str(ch.tvgName), str(ch.tvgId),
-  ].join(' ').toLowerCase();
-  return TAMIL_KEYWORDS.some(k => lower.includes(k)) || str(ch.language).toLowerCase() === 'tamil';
+function isGithubRaw(url: string): boolean {
+  const u = url.toLowerCase();
+  return u.includes('raw.githubusercontent.com') || u.includes('gist.githubusercontent.com');
 }
 
-export function isTamilGroup(groupName: string): boolean {
-  const lower = groupName.toLowerCase();
-  return TAMIL_KEYWORDS.some(k => lower.includes(k)) || lower.includes('tamil');
+function getServerProxy(url: string): string | null {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes(':517')) {
+    return null;
+  }
+  return `${origin}/proxy/cors?url=${encodeURIComponent(url)}`;
 }
 
-export { fetchUrl as fetchSourceContent } from './fetcher';
+async function tryFetch(url: string): Promise<string> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const resp = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { 'User-Agent': BROWSER_UA, 'Accept': '*/*' },
+    });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.text();
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
+
+async function unwrapAllOrigins(raw: string): Promise<string> {
+  if (!raw.trimStart().startsWith('{')) return raw;
+  try {
+    const j = JSON.parse(raw);
+    if (typeof j.contents === 'string') return j.contents;
+  } catch { /* ignore */ }
+  return raw;
+}
+
+export async function fetchSourceContent(url: string): Promise<string> {
+  const errors: string[] = [];
+
+  // 1. Server-side CORS proxy (deployed server — best 403 bypass)
+  const serverProxy = getServerProxy(url);
+  if (serverProxy) {
+    try { return await tryFetch(serverProxy); }
+    catch (e) { errors.push(`server-proxy: ${(e as Error).message}`); }
+  }
+
+  // 2. Direct fetch — always works for GitHub raw, public CDNs, workers.dev
+  if (isGithubRaw(url) || url.includes('workers.dev')) {
+    try { return await tryFetch(url); }
+    catch (e) { errors.push(`direct: ${(e as Error).message}`); }
+  }
+
+  // 3. Try direct anyway
+  try { return await tryFetch(url); }
+  catch (e) { errors.push(`direct: ${(e as Error).message}`); }
+
+  // 4. CORS proxies
+  for (const makeProxy of CORS_PROXIES) {
+    const proxyUrl = makeProxy(url);
+    try {
+      const raw = await tryFetch(proxyUrl);
+      return await unwrapAllOrigins(raw);
+    } catch (e) {
+      errors.push(`proxy(${proxyUrl.substring(0, 40)}): ${(e as Error).message}`);
+    }
+  }
+
+  throw new Error(`Failed to fetch "${url}" via all methods.\n${errors.join('\n')}`);
+}
+
+// ─── Main parse entry point ───────────────────────────────────────────────────
+/**
+ * Parse any content string (M3U, JSON, plain URLs, PHP/worker response)
+ * into Channel[] — strips DRM automatically.
+ */
+export function parseAny(content: string, sourceId: string): Channel[] {
+  return universalParse(content, sourceId);
+}
+
+// ─── M3U generator ───────────────────────────────────────────────────────────
+/**
+ * Generate an M3U playlist from channels.
+ * - Uses /redirect/:id for all streams (pure 302)
+ * - Multiple sources for same name → multiple entries
+ * - Respects tamilOnly and group filters from playlist config
+ */
+export function generateM3U(
+  channels: Channel[],
+  _serverUrl: string,
+  playlist?: PlaylistConfig,
+  sources?: Source[]
+): string {
+  let filtered = channels.filter(c => c.isActive !== false && c.enabled !== false);
+
+  if (playlist) {
+    // Tamil filter
+    if (playlist.tamilOnly) {
+      filtered = filtered.filter(c =>
+        isTamilChannel(String(c.name || ''), String(c.group || ''), String(c.language || ''))
+      );
+    }
+
+    // Source tamil filters
+    if (sources && sources.length > 0) {
+      filtered = filtered.filter(c => {
+        const src = sources.find(s => s.id === c.sourceId);
+        if (!src || !src.tamilFilter) return true;
+        return isTamilChannel(String(c.name || ''), String(c.group || ''), String(c.language || ''));
+      });
+    }
+
+    // Include groups filter
+    if (playlist.includeGroups && playlist.includeGroups.length > 0) {
+      filtered = filtered.filter(c => playlist.includeGroups.includes(String(c.group || '')));
+    }
+
+    // Exclude groups filter
+    if (playlist.excludeGroups && playlist.excludeGroups.length > 0) {
+      filtered = filtered.filter(c => !playlist.excludeGroups.includes(String(c.group || '')));
+    }
+
+    // Blocked channels
+    if (playlist.blockedChannels && playlist.blockedChannels.length > 0) {
+      filtered = filtered.filter(c => !playlist.blockedChannels.includes(c.id));
+    }
+
+    // Pinned channels first
+    if (playlist.pinnedChannels && playlist.pinnedChannels.length > 0) {
+      const pinned = filtered.filter(c => playlist.pinnedChannels.includes(c.id));
+      const rest   = filtered.filter(c => !playlist.pinnedChannels.includes(c.id));
+      filtered = [...pinned, ...rest];
+    }
+  }
+
+  // Sort by order
+  filtered.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  let m3u = '#EXTM3U\r\n';
+
+  for (const ch of filtered) {
+    const name    = String(ch.name    || 'Unknown Channel');
+    const logo    = String(ch.logo    || '');
+    const group   = String(ch.group   || 'Uncategorized');
+    const tvgId   = String(ch.tvgId   || ch.id || '');
+    const tvgName = String(ch.tvgName || name);
+
+    // Use EXACT original URL (rawUrl) — preserves pipe headers like |User-Agent=...|Referer=...
+    // Fall back to clean url if rawUrl not available
+    const streamUrl = String(ch.rawUrl || ch.url || '');
+    if (!streamUrl) continue;
+
+    m3u += `#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${logo}" group-title="${group}",${name}\r\n`;
+
+    // Re-emit VLC/player header opts if pipe headers were present
+    if (ch.rawUrl && ch.rawUrl !== ch.url) {
+      // The rawUrl already contains |User-Agent=...|Referer=... — use as-is
+      // Most players (VLC, TiviMate, Kodi, ExoPlayer) read pipe-headers natively
+      m3u += `${streamUrl}\r\n`;
+    } else {
+      // No pipe headers — emit #EXTVLCOPT for players that prefer explicit opts
+      if (ch.userAgent) m3u += `#EXTVLCOPT:http-user-agent=${ch.userAgent}\r\n`;
+      if (ch.referer)   m3u += `#EXTVLCOPT:http-referrer=${ch.referer}\r\n`;
+      m3u += `${streamUrl}\r\n`;
+    }
+  }
+
+  return m3u;
+}
+
+// ─── Tamil source playlist generator ─────────────────────────────────────────
+export function generateTamilM3U(channels: Channel[], serverUrl: string): string {
+  const tamilChannels = channels.filter(c =>
+    (c.isActive !== false || c.enabled !== false) &&
+    isTamilChannel(String(c.name || ''), String(c.group || ''), String(c.language || ''))
+  );
+  return generateM3U(tamilChannels, serverUrl);
+}

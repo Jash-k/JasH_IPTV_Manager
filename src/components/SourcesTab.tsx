@@ -9,7 +9,7 @@ import {
   ShieldOff, GitMerge,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { detectFormat } from '../utils/parser';
+import { detectFormat } from '../utils/universalParser';
 
 const SOURCE_TYPE_ICONS: Record<string, React.ReactNode> = {
   m3u:  <FileText className="w-4 h-4 text-green-400" />,

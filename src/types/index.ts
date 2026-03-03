@@ -1,7 +1,8 @@
 export interface Channel {
   id: string;
   name: string;
-  url: string;
+  url: string;           // clean URL (pipe headers stripped)
+  rawUrl?: string;       // EXACT original URL from source (with |User-Agent=...|Referer=... etc.)
   logo?: string;
   group: string;
   tvgId?: string;

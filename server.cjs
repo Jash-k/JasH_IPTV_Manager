@@ -1,25 +1,23 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IPTV Redirect Server v13
+// IPTV Redirect Server v14
 //
 // Philosophy:
-//   • NO proxy — server NEVER buffers stream data
-//   • ALL streams → pure 302 redirect to original URL
+//   • Generated playlist contains EXACT original URLs from source (rawUrl)
+//   • Pipe-headers preserved in M3U (|User-Agent=...|Referer=...)
+//   • /redirect/:id — 302 to clean URL (strips pipe headers at runtime)
 //   • DRM channels → stripped at import time, NEVER stored
-//   • Multiple sources for same channel → serve ALL as separate entries
-//   • Pipe-separated headers in URLs → parsed & forwarded via 302 Location
-//   • Default playlist → combines all playlists respecting tamilOnly flags
 //   • Keepalive → self-ping every 14 min (Render free tier)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const express   = require('express');
-const cors      = require('cors');
-const fs        = require('fs');
-const path      = require('path');
-const http      = require('http');
-const https     = require('https');
-const { URL }   = require('url');
+const express  = require('express');
+const cors     = require('cors');
+const fs       = require('fs');
+const path     = require('path');
+const http     = require('http');
+const https    = require('https');
+const { URL }  = require('url');
 
 const app      = express();
 const PORT     = parseInt(process.env.PORT || '10000', 10);
@@ -66,28 +64,24 @@ let DB = loadDB();
 // ─────────────────────────────────────────────────────────────────────────────
 // URL PIPE-HEADER PARSER
 //
-// Many M3U sources append headers to URLs using pipe separator:
-//   https://stream.example.com/live.m3u8|User-Agent=MyApp|Referer=https://site.com
-//   https://stream.example.com/live.m3u8|Cookie=abc=123|Origin=https://site.com
+// Many M3U sources append headers using pipe separator:
+//   https://stream.m3u8?token=abc|User-Agent=ReactNativeVideo/9.3.0 (Linux;Android 13) AndroidXMedia3/1.6.1&Referer=https://fancode.com/
+//   https://stream.m3u8?token=abc|User-Agent=VLC|Referer=https://site.com|Cookie=abc=123
 //
-// This is the JioTV / TiviMate / IPTV Smarters convention.
-// We parse these out and store separately so the clean URL can be redirected.
+// parsePipeUrl(rawUrl) → { url: cleanUrl, headers: { 'User-Agent': ..., 'Referer': ... } }
 // ─────────────────────────────────────────────────────────────────────────────
 function parsePipeUrl(rawUrl) {
-  if (!rawUrl || typeof rawUrl !== 'string') return { url: rawUrl, headers: {} };
+  if (!rawUrl || typeof rawUrl !== 'string') return { url: '', headers: {} };
 
-  // Split on first pipe that is not inside a query param value
-  // Format: <url>|Key=Value|Key2=Value2
   const pipeIdx = rawUrl.indexOf('|');
-  if (pipeIdx === -1) return { url: rawUrl, headers: {} };
+  if (pipeIdx === -1) return { url: rawUrl.trim(), headers: {} };
 
   const url     = rawUrl.substring(0, pipeIdx).trim();
   const headers = {};
   const rest    = rawUrl.substring(pipeIdx + 1);
 
-  // Split remaining on | and parse Key=Value pairs
   rest.split('|').forEach(part => {
-    const eq = part.indexOf('=');
+    const eq  = part.indexOf('=');
     if (eq === -1) return;
     const key = part.substring(0, eq).trim();
     const val = part.substring(eq + 1).trim();
@@ -97,32 +91,13 @@ function parsePipeUrl(rawUrl) {
   return { url, headers };
 }
 
-/**
- * Get the clean stream URL (without pipe headers) for a channel.
- * Also merges any stored channel headers.
- */
-function getCleanUrl(ch) {
-  const { url, headers } = parsePipeUrl(ch.url || '');
-
-  // Merge channel-level headers with pipe headers
-  const merged = {};
-  if (ch.userAgent) merged['User-Agent'] = ch.userAgent;
-  if (ch.referer)   merged['Referer']    = ch.referer;
-  if (ch.cookie)    merged['Cookie']     = ch.cookie;
-  if (ch.httpHeaders && typeof ch.httpHeaders === 'object') {
-    Object.assign(merged, ch.httpHeaders);
-  }
-  // Pipe headers override stored headers
-  Object.assign(merged, headers);
-
-  return { url, headers: merged };
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// DRM Detection — strip these completely
+// DRM Detection — strip completely, never serve
 // ─────────────────────────────────────────────────────────────────────────────
 function isDRM(ch) {
-  if (!ch || !ch.url) return true;
+  if (!ch) return true;
+  const raw = ch.rawUrl || ch.url || '';
+  if (!raw) return true;
   if (ch.licenseType || ch.licenseKey || ch.drmKey || ch.drmKeyId) return true;
   if (ch.isDrm === true) return true;
   return false;
@@ -148,36 +123,64 @@ function isTamil(ch) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// M3U Generator — pure 302 redirect URLs, no proxy
+// M3U Generator
+//
+// KEY RULE: Use ch.rawUrl (exact original URL with pipe headers) in playlist.
+//           If rawUrl not available, fall back to ch.url.
+//
+// This means the generated playlist contains the EXACT URL from the source,
+// including |User-Agent=...|Referer=... pipe headers.
+//
+// Example output:
+//   #EXTINF:-1 tvg-name="FanCode Match" group-title="Sports",FanCode Match
+//   https://in-mc-flive.fancode.com/.../360p.m3u8?hdntl=...~|User-Agent=ReactNativeVideo/9.3.0 (Linux;Android 13) AndroidXMedia3/1.6.1&Referer=https://fancode.com/
+//
+// Players that support pipe-headers (TiviMate, IPTV Smarters, Kodi, VLC) will
+// use the headers automatically. Players that don't will use the clean URL.
 // ─────────────────────────────────────────────────────────────────────────────
 function esc(s) {
   return String(s || '').replace(/"/g, "'").replace(/[\r\n]/g, ' ');
 }
 
-function generateM3U(channels, serverBase, opts = {}) {
+function getStreamUrl(ch) {
+  // Always prefer rawUrl — exact original URL from source with pipe headers
+  return ch.rawUrl || ch.url || '';
+}
+
+function generateM3U(channels, opts = {}) {
   const { tamilOnly = false } = opts;
 
   const entries = channels.filter(ch => {
-    if (isDRM(ch))              return false;
-    if (tamilOnly && !isTamil(ch)) return false;
-    if (ch.enabled === false)   return false;
-    if (ch.isActive === false)  return false;
+    if (isDRM(ch))                   return false;
+    if (tamilOnly && !isTamil(ch))   return false;
+    if (ch.enabled  === false)       return false;
+    if (ch.isActive === false)       return false;
+    if (!getStreamUrl(ch))           return false;
     return true;
   });
 
   const lines = ['#EXTM3U x-tvg-url=""'];
 
   for (const ch of entries) {
-    const tvgId   = ch.tvgId   ? ` tvg-id="${esc(ch.tvgId)}"`          : '';
+    const tvgId   = ch.tvgId   ? ` tvg-id="${esc(ch.tvgId)}"`           : '';
     const tvgName = ` tvg-name="${esc(ch.tvgName || ch.name)}"`;
-    const logo    = ch.logo    ? ` tvg-logo="${esc(ch.logo)}"`          : '';
+    const logo    = ch.logo    ? ` tvg-logo="${esc(ch.logo)}"`           : '';
     const group   = ` group-title="${esc(ch.group || 'Uncategorized')}"`;
-    const tamil   = isTamil(ch) ? ' x-tamil="true"'                    : '';
+    const tamil   = isTamil(ch) ? ' x-tamil="true"'                     : '';
 
-    // Always use per-channel redirect — no best-link logic
-    const streamUrl = `${serverBase}/redirect/${ch.id}`;
+    // EXACT original URL — includes pipe headers if present in source
+    const streamUrl = getStreamUrl(ch);
 
     lines.push(`#EXTINF:-1${tvgId}${tvgName}${logo}${group}${tamil},${esc(ch.name)}`);
+
+    // Emit #EXTVLCOPT for players that prefer explicit header directives
+    // (Only when rawUrl does NOT already contain pipe headers)
+    const hasPipe = streamUrl.includes('|');
+    if (!hasPipe) {
+      if (ch.userAgent) lines.push(`#EXTVLCOPT:http-user-agent=${ch.userAgent}`);
+      if (ch.referer)   lines.push(`#EXTVLCOPT:http-referrer=${ch.referer}`);
+    }
+
     lines.push(streamUrl);
     lines.push('');
   }
@@ -187,11 +190,6 @@ function generateM3U(channels, serverBase, opts = {}) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Default Playlist Builder
-//
-// The "default" playlist combines all created playlists:
-//   - Playlists with tamilOnly=true → only Tamil channels from their groups
-//   - Playlists with tamilOnly=false → all channels from their groups
-//   - If no playlists defined → all active channels
 // ─────────────────────────────────────────────────────────────────────────────
 function buildDefaultPlaylist() {
   const playlists = DB.playlists || [];
@@ -206,9 +204,8 @@ function buildDefaultPlaylist() {
 
   for (const playlist of playlists) {
     const blocked = new Set(playlist.blockedChannels || []);
-    const pinned  = (playlist.pinnedChannels || []);
+    const pinned  = playlist.pinnedChannels || [];
 
-    // Add pinned first
     for (const pid of pinned) {
       if (!seen.has(pid)) {
         const ch = channels.find(c => c.id === pid);
@@ -219,20 +216,16 @@ function buildDefaultPlaylist() {
       }
     }
 
-    // Add group-filtered channels
     for (const ch of channels) {
-      if (seen.has(ch.id))          continue;
-      if (isDRM(ch))                continue;
-      if (blocked.has(ch.id))       continue;
-      if (ch.enabled === false)     continue;
-      if (ch.isActive === false)    continue;
+      if (seen.has(ch.id))       continue;
+      if (isDRM(ch))             continue;
+      if (blocked.has(ch.id))   continue;
+      if (ch.enabled  === false) continue;
+      if (ch.isActive === false) continue;
 
-      // Group filter — if includeGroups is set, only include those groups
       if (playlist.includeGroups && playlist.includeGroups.length > 0) {
         if (!playlist.includeGroups.includes(ch.group)) continue;
       }
-
-      // Tamil filter
       if (playlist.tamilOnly && !isTamil(ch)) continue;
 
       result.push(ch);
@@ -244,27 +237,28 @@ function buildDefaultPlaylist() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HEAD health check — no stream data, just headers
+// HEAD health check — no stream data downloaded
 // ─────────────────────────────────────────────────────────────────────────────
-function headCheck(url, timeoutMs = 7000) {
+function headCheck(rawUrl, timeoutMs = 7000) {
   return new Promise(resolve => {
-    const t0      = Date.now();
-    let settled   = false;
-    const done    = r => { if (!settled) { settled = true; resolve(r); } };
+    const t0    = Date.now();
+    let settled = false;
+    const done  = r => { if (!settled) { settled = true; resolve(r); } };
 
     try {
-      const { url: cleanUrl } = parsePipeUrl(url);
+      // Always strip pipe headers for health check
+      const { url: cleanUrl } = parsePipeUrl(rawUrl);
       const parsed = new URL(cleanUrl);
       const lib    = parsed.protocol === 'https:' ? https : http;
 
       const req = lib.request(cleanUrl, {
         method  : 'HEAD',
         headers : {
-          'User-Agent' : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept'     : '*/*',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept'    : '*/*',
         },
-        timeout           : timeoutMs,
-        rejectUnauthorized: false,
+        timeout            : timeoutMs,
+        rejectUnauthorized : false,
       }, res => {
         const latency = Date.now() - t0;
         const status  = res.statusCode || 0;
@@ -282,7 +276,7 @@ function headCheck(url, timeoutMs = 7000) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Server-side fetch for CORS proxy (source imports)
+// Server-side CORS fetch (for source imports)
 // ─────────────────────────────────────────────────────────────────────────────
 function fetchText(url, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
@@ -299,8 +293,8 @@ function fetchText(url, timeoutMs = 20000) {
             'Accept'         : 'text/plain,application/x-mpegurl,*/*',
             'Accept-Language': 'en-US,en;q=0.9',
           },
-          timeout           : timeoutMs,
-          rejectUnauthorized: false,
+          timeout            : timeoutMs,
+          rejectUnauthorized : false,
         }, res => {
           if ([301,302,303,307,308].includes(res.statusCode) && res.headers.location && hops < 5) {
             hops++; res.resume(); doGet(res.headers.location); return;
@@ -349,51 +343,46 @@ app.get('/health', (req, res) => {
     groups    : (DB.groups    || []).length,
     tamil     : chs.filter(c => isTamil(c)).length,
     keepalive : !!(SELF_URL && !SELF_URL.includes('localhost')),
-    version   : '13.0',
+    version   : '14.0',
     ts        : new Date().toISOString(),
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PLAYLIST ENDPOINTS
+// PLAYLIST ENDPOINTS — all use raw original URLs
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** DEFAULT playlist — combines all created playlists respecting tamilOnly flags */
+/** DEFAULT playlist — combines all created playlists */
 app.get('/api/playlist/default.m3u', (req, res) => {
-  const base = `${req.protocol}://${req.get('host')}`;
-  const chs  = buildDefaultPlaylist();
+  const chs = buildDefaultPlaylist();
   res.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
   res.setHeader('Content-Disposition', 'inline; filename="default.m3u"');
   res.setHeader('Cache-Control', 'no-cache, no-store');
-  res.send(generateM3U(chs, base));
+  res.send(generateM3U(chs));
 });
 
 /** ALL channels */
 app.get('/api/playlist/all.m3u', (req, res) => {
-  const base  = `${req.protocol}://${req.get('host')}`;
   const chs   = (DB.channels || []).filter(c => c.enabled !== false && c.isActive !== false);
   const tamil = req.query.tamil === '1';
   res.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
   res.setHeader('Content-Disposition', 'inline; filename="all.m3u"');
   res.setHeader('Cache-Control', 'no-cache, no-store');
-  res.send(generateM3U(chs, base, { tamilOnly: tamil }));
+  res.send(generateM3U(chs, { tamilOnly: tamil }));
 });
 
 /** Tamil only */
 app.get('/api/playlist/tamil.m3u', (req, res) => {
-  const base = `${req.protocol}://${req.get('host')}`;
-  const chs  = (DB.channels || []).filter(c => c.enabled !== false && c.isActive !== false && isTamil(c));
+  const chs = (DB.channels || []).filter(c => c.enabled !== false && c.isActive !== false && isTamil(c));
   res.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
   res.setHeader('Content-Disposition', 'inline; filename="tamil.m3u"');
   res.setHeader('Cache-Control', 'no-cache, no-store');
-  res.send(generateM3U(chs, base, { tamilOnly: true }));
+  res.send(generateM3U(chs, { tamilOnly: true }));
 });
 
 /** Named playlist by ID */
 app.get('/api/playlist/:id.m3u', (req, res) => {
-  const base     = `${req.protocol}://${req.get('host')}`;
   const playlist = (DB.playlists || []).find(p => p.id === req.params.id);
-  const kodi     = req.query.kodi  === '1';
   const tamilQS  = req.query.tamil === '1';
 
   let chs;
@@ -417,13 +406,11 @@ app.get('/api/playlist/:id.m3u', (req, res) => {
 
   res.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-store');
-  res.send(generateM3U(chs, base, { tamilOnly: tamilQS }));
-  void kodi; // reserved for future KODIPROP output
+  res.send(generateM3U(chs, { tamilOnly: tamilQS }));
 });
 
 /** Per-source playlist */
 app.get('/api/playlist/source/:sourceId.m3u', (req, res) => {
-  const base   = `${req.protocol}://${req.get('host')}`;
   const source = (DB.sources || []).find(s => s.id === req.params.sourceId);
   const tamil  = req.query.tamil === '1' || !!(source && source.tamilFilter);
   const chs    = (DB.channels || []).filter(c =>
@@ -431,34 +418,28 @@ app.get('/api/playlist/source/:sourceId.m3u', (req, res) => {
   );
   res.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-store');
-  res.send(generateM3U(chs, base, { tamilOnly: tamil }));
+  res.send(generateM3U(chs, { tamilOnly: tamil }));
 });
 
 /** Per-source Tamil playlist */
 app.get('/api/playlist/source/:sourceId/tamil.m3u', (req, res) => {
-  const base = `${req.protocol}://${req.get('host')}`;
-  const chs  = (DB.channels || []).filter(c =>
+  const chs = (DB.channels || []).filter(c =>
     c.sourceId === req.params.sourceId && c.enabled !== false && isTamil(c)
   );
   res.setHeader('Content-Type', 'application/x-mpegurl; charset=utf-8');
-  res.send(generateM3U(chs, base, { tamilOnly: true }));
+  res.send(generateM3U(chs, { tamilOnly: true }));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// REDIRECT — pure 302, server NEVER touches stream data
+// REDIRECT — strips pipe headers, pure 302 to clean URL
+//
+// This endpoint is for players that DON'T support pipe-header syntax.
+// Players that DO support it (TiviMate, Smarters, Kodi) can use rawUrl directly.
+//
+// FanCode example:
+//   rawUrl: https://in-mc-flive.fancode.com/.../360p.m3u8?hdntl=...~|User-Agent=ReactNativeVideo/9.3.0
+//   302 → : https://in-mc-flive.fancode.com/.../360p.m3u8?hdntl=...~
 // ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * GET /redirect/:id
- *
- * Resolves channel URL, strips pipe-headers, does pure 302 redirect.
- * The stream goes directly from the player to the source — server is not involved.
- *
- * FanCode / JioTV pipe-URL example:
- *   Stored URL: https://in-mc-flive.fancode.com/...360p.m3u8?hdntl=...~|User-Agent=ReactNativeVideo/9.3.0 (Linux;Android 13)
- *   Clean URL:  https://in-mc-flive.fancode.com/...360p.m3u8?hdntl=...~
- *   302 →       Clean URL (player uses its own UA or the UA from #EXTVLCOPT if supported)
- */
 app.get('/redirect/:id', (req, res) => {
   const ch = (DB.channels || []).find(c => c.id === req.params.id);
 
@@ -467,29 +448,27 @@ app.get('/redirect/:id', (req, res) => {
   }
 
   if (isDRM(ch)) {
-    return res.status(410).json({
-      error  : 'DRM channel — only direct streams supported.',
-      channel: ch.name,
-    });
+    return res.status(410).json({ error: 'DRM channel — stripped', channel: ch.name });
   }
 
-  // Parse pipe-separated headers out of the URL
-  const { url: cleanUrl, headers: pipeHeaders } = getCleanUrl(ch);
-
-  if (!cleanUrl) {
+  // Use rawUrl first, fall back to url
+  const sourceUrl = ch.rawUrl || ch.url || '';
+  if (!sourceUrl) {
     return res.status(400).json({ error: 'Channel has no URL', channel: ch.name });
   }
 
-  // Log for debugging
-  const hasHeaders = Object.keys(pipeHeaders).length > 0;
-  console.log(`[302] ${ch.name} → ${cleanUrl.substring(0, 100)}${hasHeaders ? ' (+headers)' : ''}`);
+  // Strip pipe headers → clean URL for 302
+  const { url: cleanUrl } = parsePipeUrl(sourceUrl);
+  if (!cleanUrl) {
+    return res.status(400).json({ error: 'Could not parse channel URL', channel: ch.name });
+  }
 
-  // Pure 302 — player connects directly to source
+  console.log(`[302] ${ch.name} → ${cleanUrl.substring(0, 120)}`);
   return res.redirect(302, cleanUrl);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HEALTH CHECK API — HEAD-only, no stream data downloaded
+// HEALTH CHECK API
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Single channel health check */
@@ -498,26 +477,28 @@ app.get('/api/health/:id', async (req, res) => {
   if (!ch) return res.status(404).json({ error: 'Not found' });
 
   if (isDRM(ch)) {
-    return res.json({ id: ch.id, name: ch.name, ok: null, note: 'DRM — stripped', isDrm: true });
+    return res.json({ id: ch.id, name: ch.name, ok: null, note: 'DRM — stripped' });
   }
 
-  const { url: cleanUrl } = getCleanUrl(ch);
-  const result = await headCheck(cleanUrl, 8000);
+  const sourceUrl = ch.rawUrl || ch.url || '';
+  const result    = await headCheck(sourceUrl, 8000);
 
-  // Persist result
   ch.lastHealth  = result.ok;
   ch.lastLatency = result.latency;
   ch.lastChecked = new Date().toISOString();
   saveDB(DB);
 
   res.json({
-    id: ch.id, name: ch.name,
-    ok: result.ok, status: result.status,
-    latency: result.latency,
-    contentType: result.contentType,
-    isDrm: false, isTamil: isTamil(ch),
-    routing: '302-direct',
-    redirectUrl: `/redirect/${ch.id}`,
+    id          : ch.id,
+    name        : ch.name,
+    ok          : result.ok,
+    status      : result.status,
+    latency     : result.latency,
+    contentType : result.contentType,
+    isTamil     : isTamil(ch),
+    routing     : '302-direct',
+    redirectUrl : `/redirect/${ch.id}`,
+    rawUrl      : sourceUrl.substring(0, 100) + (sourceUrl.length > 100 ? '...' : ''),
   });
 });
 
@@ -530,8 +511,8 @@ app.post('/api/health/batch', async (req, res) => {
 
   const results = await Promise.all(
     chs.map(async ch => {
-      const { url: cleanUrl } = getCleanUrl(ch);
-      const r = await headCheck(cleanUrl, 6000);
+      const sourceUrl = ch.rawUrl || ch.url || '';
+      const r = await headCheck(sourceUrl, 6000);
       ch.lastHealth  = r.ok;
       ch.lastLatency = r.latency;
       ch.lastChecked = new Date().toISOString();
@@ -547,7 +528,7 @@ app.post('/api/health/batch', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CORS PROXY — server-side GET for source imports (bypasses CORS on frontend)
+// CORS PROXY — server-side GET for source imports
 // ─────────────────────────────────────────────────────────────────────────────
 app.get('/proxy/cors', async (req, res) => {
   const url = req.query.url;
@@ -567,27 +548,36 @@ app.get('/proxy/cors', async (req, res) => {
 // API — CRUD
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Full sync from frontend */
+/**
+ * POST /api/sync — push all data from frontend
+ *
+ * IMPORTANT: rawUrl is stored AS-IS (with pipe headers).
+ * url is stored as the clean version (pipe headers stripped).
+ * Both are preserved so:
+ *   - generateM3U() uses rawUrl → exact original URL in playlist
+ *   - /redirect/:id uses url   → clean 302 redirect
+ */
 app.post('/api/sync', auth, (req, res) => {
   try {
     const incoming = req.body;
+
     if (incoming.channels) {
       incoming.channels = incoming.channels
         .filter(c => !isDRM(c))
         .map(c => {
-          // Normalise stored URL — strip pipe headers, store clean URL
-          const { url, headers } = parsePipeUrl(c.url || '');
-          const merged = { ...c, url };
-          // Merge pipe headers into stored headers
-          if (Object.keys(headers).length > 0) {
-            merged.httpHeaders = { ...(c.httpHeaders || {}), ...headers };
-            if (headers['User-Agent']) merged.userAgent = headers['User-Agent'];
-            if (headers['Referer'])    merged.referer   = headers['Referer'];
-            if (headers['Cookie'])     merged.cookie    = headers['Cookie'];
-          }
-          return merged;
+          // If rawUrl is present (set by frontend parser), keep both
+          // If only url is present, check if it has pipe headers
+          const raw = c.rawUrl || c.url || '';
+          const { url: cleanUrl } = parsePipeUrl(raw);
+
+          return {
+            ...c,
+            rawUrl : raw,       // EXACT original URL with pipe headers
+            url    : cleanUrl,  // Clean URL for redirect
+          };
         });
     }
+
     DB = { ...EMPTY_DB, ...incoming };
     saveDB(DB);
 
@@ -600,7 +590,7 @@ app.post('/api/sync', auth, (req, res) => {
       tamil    : tamil.length,
       sources  : (DB.sources   || []).length,
       drm      : 0,
-      message  : `Stored ${chs.length} direct channels (DRM stripped, pipe-URLs normalised)`,
+      message  : `Stored ${chs.length} channels — playlist uses exact source URLs`,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -611,19 +601,19 @@ app.post('/api/sync', auth, (req, res) => {
 app.get('/api/stats', (req, res) => {
   const chs = DB.channels || [];
   res.json({
-    channels : chs.length,
-    direct   : chs.length,
-    drm      : 0,
-    tamil    : chs.filter(c => isTamil(c)).length,
-    sources  : (DB.sources   || []).length,
-    groups   : (DB.groups    || []).length,
-    playlists: (DB.playlists || []).length,
-    uptime   : Math.floor(process.uptime()),
-    memory   : Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+    channels  : chs.length,
+    direct    : chs.length,
+    drm       : 0,
+    tamil     : chs.filter(c => isTamil(c)).length,
+    sources   : (DB.sources   || []).length,
+    groups    : (DB.groups    || []).length,
+    playlists : (DB.playlists || []).length,
+    uptime    : Math.floor(process.uptime()),
+    memory    : Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
   });
 });
 
-/** DB dump (auth) */
+/** DB dump */
 app.get('/api/db', auth, (req, res) => res.json(DB));
 
 /** Channel list */
@@ -650,11 +640,11 @@ app.get('/api/channels', (req, res) => {
       name        : ch.name,
       group       : ch.group,
       url         : ch.url,
+      rawUrl      : ch.rawUrl,
       logo        : ch.logo,
       enabled     : ch.enabled,
       isActive    : ch.isActive,
       isTamil     : isTamil(ch),
-      isDrm       : false,
       lastHealth  : ch.lastHealth,
       lastLatency : ch.lastLatency,
       streamType  : ch.streamType,
@@ -687,7 +677,7 @@ app.get('/api/sources', auth, (req, res) => res.json(DB.sources || []));
 
 app.patch('/api/source/:id', auth, (req, res) => {
   const src = (DB.sources || []).find(s => s.id === req.params.id);
-  if (!src) return res.status(404).json({ error: 'Not found' });
+  if (!src) return res.status(404).json({ error: 'Not found' });\
   Object.assign(src, req.body);
   saveDB(DB);
   res.json({ success: true, source: src });
@@ -704,11 +694,12 @@ app.delete('/api/source/:id', auth, (req, res) => {
 app.get('/api/test/:id', auth, async (req, res) => {
   const ch = (DB.channels || []).find(c => c.id === req.params.id);
   if (!ch) return res.status(404).json({ error: 'Not found' });
-  const { url: cleanUrl } = getCleanUrl(ch);
-  const r = await headCheck(cleanUrl, 10000);
+  const sourceUrl = ch.rawUrl || ch.url || '';
+  const r = await headCheck(sourceUrl, 10000);
   res.json({
     success     : r.ok,
-    url         : cleanUrl,
+    rawUrl      : sourceUrl,
+    cleanUrl    : parsePipeUrl(sourceUrl).url,
     status      : r.status,
     latency     : r.latency,
     contentType : r.contentType,
@@ -727,14 +718,14 @@ app.get('*', (req, res) => {
     res.status(200).send(`
       <html><body style="background:#111;color:#0f0;font-family:monospace;padding:40px">
         <h2>📺 IPTV Manager — starting...</h2>
-        <p>Build not found. Run: npm run build</p>
+        <p>Build not found.</p>
       </body></html>
     `);
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Keepalive — prevents Render free tier sleeping (pings /health every 14 min)
+// Keepalive — prevents Render free tier sleeping
 // ─────────────────────────────────────────────────────────────────────────────
 function startKeepalive() {
   if (!SELF_URL || SELF_URL.includes('localhost')) {
@@ -764,21 +755,24 @@ app.listen(PORT, '0.0.0.0', () => {
   const chs = DB.channels || [];
   console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║  📺  IPTV Redirect Server v13 — Pure 302, No Proxy       ║
+║  📺  IPTV Redirect Server v14 — Raw URL Passthrough      ║
 ╠══════════════════════════════════════════════════════════╣
 ║  Port      : ${String(PORT).padEnd(43)}║
-║  Channels  : ${String(chs.length + ' direct (0 DRM)').padEnd(43)}║
-║  Sources   : ${String((DB.sources||[]).length).padEnd(43)}║
-║  Playlists : ${String((DB.playlists||[]).length).padEnd(43)}║
+║  Channels  : ${String(chs.length + ' (DRM stripped)').padEnd(43)}║
+║  Tamil     : ${String(chs.filter(c => isTamil(c)).length).padEnd(43)}║
 ║  DB        : ${String(DB_FILE).substring(0,43).padEnd(43)}║
 ╠══════════════════════════════════════════════════════════╣
-║  GET /redirect/:id            → 302 to original URL      ║
-║  GET /api/playlist/default.m3u→ combined default list    ║
-║  GET /api/playlist/all.m3u    → all channels             ║
-║  GET /api/playlist/tamil.m3u  → tamil only               ║
-║  GET /api/playlist/:id.m3u    → named playlist           ║
-║  GET /api/health/:id          → HEAD check (no data)     ║
-║  POST /api/sync               → push data from UI        ║
+║  Playlist uses EXACT source URLs (rawUrl preserved)      ║
+║  Pipe headers |User-Agent=...|Referer=... kept as-is     ║
+║  /redirect/:id strips pipe headers → clean 302           ║
+╠══════════════════════════════════════════════════════════╣
+║  GET /api/playlist/default.m3u → combined default        ║
+║  GET /api/playlist/all.m3u     → all channels            ║
+║  GET /api/playlist/tamil.m3u   → tamil only              ║
+║  GET /api/playlist/:id.m3u     → named playlist          ║
+║  GET /redirect/:id             → clean 302 redirect      ║
+║  GET /api/health/:id           → HEAD check              ║
+║  POST /api/sync                → push data from UI       ║
 ╚══════════════════════════════════════════════════════════╝
 `);
   startKeepalive();

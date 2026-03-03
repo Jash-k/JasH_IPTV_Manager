@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { Channel, Group, Source, PlaylistConfig, TabType } from '../types';
-import { parseAny, generateM3U, isTamilChannel } from '../utils/parser';
-import { fetchUrl as fetchSourceContent } from '../utils/fetcher';
+import { parseAny, generateM3U, fetchSourceContent } from '../utils/parser';
+import { isTamilChannel } from '../utils/universalParser';
 import { v4 as uuidv4 } from 'uuid';
 
 const BASE_URL      = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:10000';
@@ -176,7 +176,7 @@ export const useStore = create<AppState>((set, get) => ({
         referer     : ch.referer,
         cookie      : ch.cookie,
         httpHeaders : ch.httpHeaders,
-        isTamil     : isTamilChannel(ch),
+        isTamil     : isTamilChannel(String(ch.name||''), String(ch.group||''), String(ch.language||'')),
         healthStatus: 'unknown' as const,
       }));
 
@@ -244,7 +244,7 @@ export const useStore = create<AppState>((set, get) => ({
     const newCh: Channel = {
       ...channel,
       id     : uuidv4(),
-      isTamil: isTamilChannel(channel as Channel),
+      isTamil: isTamilChannel(String(channel.name||''), String(channel.group||''), String(channel.language||'')),
     };
     set(s => ({ channels: [...s.channels, newCh] }));
     get().syncGroups();
@@ -257,7 +257,7 @@ export const useStore = create<AppState>((set, get) => ({
       channels: s.channels.map(ch => {
         if (ch.id !== id) return ch;
         const updated = { ...ch, ...updates };
-        return { ...updated, isTamil: isTamilChannel(updated) };
+        return { ...updated, isTamil: isTamilChannel(String(updated.name||''), String(updated.group||''), String(updated.language||'')) };
       }),
     }));
     get().syncGroups();
