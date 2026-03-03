@@ -6,7 +6,7 @@ import {
   Clock, Edit2, Save, X, FileJson, FileText, Globe, Timer,
   AlertCircle, Zap, Heart, Activity,
   ExternalLink, Copy, Check, Wifi, WifiOff, Loader,
-  ShieldOff, GitMerge,
+  ShieldOff, GitMerge, FolderHeart, UserMinus,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { detectFormat } from '../utils/universalParser';
@@ -71,7 +71,7 @@ function HealthBadge({ status }: { status?: string }) {
 export default function SourcesTab() {
   const {
     sources, channels, addSource, deleteSource, loadSource, updateSource,
-    tamilSourceFilter, setTamilSourceFilter, serverUrl,
+    tamilSourceFilter, setTamilSourceFilter, serverUrl, removeNonTamilFromSource,
   } = useStore();
 
   const [showAdd, setShowAdd]         = useState(false);
@@ -540,19 +540,46 @@ export default function SourcesTab() {
                       </div>
                     )}
 
-                    {/* Tamil filter active banner */}
+                    {/* Tamil filter active banner + Remove Others */}
                     {src.tamilFilter && src.status === 'success' && (
-                      <div className="mt-2 flex items-center gap-2 bg-orange-500/10 border border-orange-500/30 rounded-lg px-3 py-1.5">
-                        <Heart className="w-3.5 h-3.5 text-orange-400 fill-orange-400 shrink-0" />
-                        <span className="text-orange-300 text-xs font-medium">
-                          Tamil filter ON — playlist URL serves {src.tamilCount} Tamil channels only
-                        </span>
-                        <button
-                          onClick={() => toggleTamilFilter(src.id, false)}
-                          className="ml-auto text-orange-400/60 hover:text-orange-400 transition-colors"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
+                      <div className="mt-2 space-y-2">
+                        <div className="flex items-center gap-2 bg-orange-500/10 border border-orange-500/30 rounded-lg px-3 py-2">
+                          <FolderHeart className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <span className="text-orange-300 text-xs font-semibold block">
+                              📁 {src.name} — Tamil folder active
+                            </span>
+                            <span className="text-orange-400/70 text-xs">
+                              {src.tamilCount} Tamil channels shown in playlist · {(src.totalCount || 0) - (src.tamilCount || 0)} other channels hidden
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => toggleTamilFilter(src.id, false)}
+                            className="text-orange-400/60 hover:text-orange-400 transition-colors shrink-0"
+                            title="Turn off Tamil filter"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        {/* Remove Others button */}
+                        {((src.totalCount || 0) - (src.tamilCount || 0)) > 0 && (
+                          <button
+                            onClick={() => {
+                              const nonTamilCount = (src.totalCount || 0) - (src.tamilCount || 0);
+                              if (!confirm(`Remove ${nonTamilCount} non-Tamil channels from "${src.name}"?\n\nOnly ${src.tamilCount} Tamil channels will remain.\nEmpty groups will be auto-deleted.`)) return;
+                              const removed = removeNonTamilFromSource(src.id);
+                              toast.success(`🗑️ Removed ${removed} non-Tamil channels. Empty groups deleted.`);
+                              updateSource(src.id, { channelCount: src.tamilCount });
+                            }}
+                            className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 hover:border-red-400 rounded-lg text-xs font-semibold transition-all"
+                          >
+                            <UserMinus className="w-3.5 h-3.5" />
+                            Remove {(src.totalCount || 0) - (src.tamilCount || 0)} Non-Tamil Channels from this source
+                            <span className="bg-red-500/20 px-1.5 py-0.5 rounded text-red-300">
+                              Keep only {src.tamilCount} Tamil channels
+                            </span>
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>

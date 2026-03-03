@@ -1,152 +1,369 @@
 import { Channel } from '../types';
 
+// ─── Safe string coercion ─────────────────────────────────────────────────────
+const ss = (v: unknown): string =>
+  typeof v === 'string' ? v.trim() :
+  typeof v === 'number' ? String(v) : '';
+
+// ─── Raw JSON stream interface ────────────────────────────────────────────────
 export interface RawJsonStream {
-  link?: string; name?: string; logo?: string; cookie?: string;
-  drmLicense?: string; drmScheme?: string;
-  url?: string; stream?: string; src?: string; streamUrl?: string; playbackUrl?: string;
-  title?: string; channel?: string; channelName?: string; label?: string;
-  icon?: string; image?: string; thumbnail?: string; poster?: string;
-  tvgLogo?: string; 'tvg-logo'?: string;
-  group?: string; category?: string; genre?: string; groupTitle?: string;
-  'group-title'?: string; type?: string;
-  tvgId?: string; 'tvg-id'?: string; tvgName?: string; 'tvg-name'?: string;
-  licenseType?: string; licenseKey?: string; drmKey?: string; clearKey?: string; widevineUrl?: string;
-  userAgent?: string; 'user-agent'?: string; referer?: string;
-  headers?: Record<string, string>; httpHeaders?: Record<string, string>;
-  channels?: RawJsonStream[]; streams?: RawJsonStream[]; items?: RawJsonStream[];
-  data?: RawJsonStream[] | { channels?: RawJsonStream[]; streams?: RawJsonStream[] };
-  language?: string; country?: string;
+  // ── URL fields ──────────────────────────────────────────────
+  link?: unknown;
+  url?: unknown;
+  stream?: unknown;
+  src?: unknown;
+  streamUrl?: unknown;
+  stream_url?: unknown;
+  playbackUrl?: unknown;
+
+  // ── URL arrays (streamUrls format) ─────────────────────────
+  streamUrls?: unknown;      // [ "https://..." ]  ← YOUR FORMAT
+  urls?: unknown;
+  streams?: unknown;
+
+  // ── Name fields ─────────────────────────────────────────────
+  name?: unknown;
+  title?: unknown;
+  channel?: unknown;
+  channelName?: unknown;
+  channel_name?: unknown;
+  label?: unknown;
+  tvgName?: unknown;
+  tvg_name?: unknown;
+  'tvg-name'?: unknown;
+
+  // ── Logo fields ─────────────────────────────────────────────
+  logo?: unknown;
+  logoUrl?: unknown;         // ← YOUR FORMAT
+  logo_url?: unknown;
+  icon?: unknown;
+  image?: unknown;
+  thumbnail?: unknown;
+  poster?: unknown;
+  tvgLogo?: unknown;
+  tvg_logo?: unknown;
+  'tvg-logo'?: unknown;
+
+  // ── Group / Category ────────────────────────────────────────
+  group?: unknown;
+  category?: unknown;        // ← YOUR FORMAT (used as group)
+  genre?: unknown;
+  groupTitle?: unknown;
+  group_title?: unknown;
+  'group-title'?: unknown;
+  type?: unknown;
+
+  // ── ID / TVG ────────────────────────────────────────────────
+  id?: unknown;              // ← YOUR FORMAT (e.g. "ThanthiOne.in")
+  tvgId?: unknown;
+  tvg_id?: unknown;
+  'tvg-id'?: unknown;
+  channelId?: unknown;
+  channel_id?: unknown;
+
+  // ── Language / Country ──────────────────────────────────────
+  language?: unknown;
+  lang?: unknown;
+  country?: unknown;
+
+  // ── DRM fields (used to detect + skip) ──────────────────────
+  licenseType?: unknown;
+  licenseKey?: unknown;
+  drmLicense?: unknown;
+  drmScheme?: unknown;
+  clearKey?: unknown;
+  drmKey?: unknown;
+  widevineUrl?: unknown;
+  inputstream?: unknown;
+
+  // ── Header fields ───────────────────────────────────────────
+  userAgent?: unknown;
+  user_agent?: unknown;
+  'user-agent'?: unknown;
+  referer?: unknown;
+  cookie?: unknown;
+  headers?: Record<string, string>;
+  httpHeaders?: Record<string, string>;
+
+  // ── Nesting ─────────────────────────────────────────────────
+  channels?: unknown;
+  items?: unknown;
+  data?: unknown;
+  playlist?: unknown;
 }
 
-function detectStreamType(url: unknown): 'hls' | 'dash' | 'direct' {
-  const u = ss(url).toLowerCase();
+// ─── Stream type detector ─────────────────────────────────────────────────────
+function detectStreamType(url: string): 'hls' | 'dash' | 'direct' {
+  const u = url.toLowerCase();
   if (u.includes('.mpd') || u.includes('/dash/') || u.includes('manifest.mpd')) return 'dash';
-  if (u.includes('.m3u8') || u.includes('/hls/')) return 'hls';
+  if (u.includes('.m3u8') || u.includes('/hls/') || u.includes('playlist.m3u') || u.includes('chunks.m3u8')) return 'hls';
   return 'direct';
 }
 
-// Safe string coercion — avoids ".toLowerCase is not a function" on number/object fields
-const ss = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
-
-function extractUrl(raw: RawJsonStream): string | null {
-  const u = ss(raw.link) || ss(raw.url) || ss(raw.stream) || ss(raw.src) || ss(raw.streamUrl) || ss(raw.playbackUrl);
-  return u || null;
+// ─── DRM detector ────────────────────────────────────────────────────────────
+function hasDRM(r: RawJsonStream): boolean {
+  return !!(
+    ss(r.licenseType)  || ss(r.licenseKey)  ||
+    ss(r.drmLicense)   || ss(r.drmScheme)   ||
+    ss(r.clearKey)     || ss(r.drmKey)      ||
+    ss(r.widevineUrl)  || ss(r.inputstream)
+  );
 }
 
-function extractName(raw: RawJsonStream): string {
-  return ss(raw.name) || ss(raw.title) || ss(raw.channel) || ss(raw.channelName) || ss(raw.label) || ss(raw.tvgName) || ss(raw['tvg-name']) || 'Unknown Channel';
-}
+// ─── Field extractors ─────────────────────────────────────────────────────────
 
-function extractLogo(raw: RawJsonStream): string | undefined {
-  const v = ss(raw.logo) || ss(raw.icon) || ss(raw.image) || ss(raw.thumbnail) || ss(raw.poster) || ss(raw.tvgLogo) || ss(raw['tvg-logo']);
-  return v || undefined;
-}
-
-function extractGroup(raw: RawJsonStream): string {
-  const typeVal = ss(raw.type);
-  return ss(raw.group) || ss(raw.category) || ss(raw.genre) || ss(raw.groupTitle) || ss(raw['group-title']) ||
-    (typeVal && !['hls','dash','direct'].includes(typeVal) ? typeVal : '') || 'Uncategorized';
-}
-
-function extractDRM(raw: RawJsonStream): { licenseType?: string; licenseKey?: string; isDrm?: boolean } {
-  const scheme = ss(raw.drmScheme);
-  const license = ss(raw.drmLicense);
-  if (scheme && license) {
-    const sl = scheme.toLowerCase();
-    const licenseType = sl === 'clearkey' ? 'clearkey' : sl === 'widevine' ? 'widevine' : sl === 'playready' ? 'playready' : sl;
-    return { licenseType, licenseKey: license, isDrm: true };
+/** Extract primary single URL (first streamUrls entry if array) */
+function extractPrimaryUrl(r: RawJsonStream): string {
+  // Array formats: streamUrls, urls
+  if (Array.isArray(r.streamUrls) && r.streamUrls.length > 0) {
+    return ss(r.streamUrls[0]);
   }
-  const lt = ss(raw.licenseType); const lk = ss(raw.licenseKey);
-  if (lt && lk) return { licenseType: lt, licenseKey: lk, isDrm: true };
-  const ck = ss(raw.clearKey); if (ck) return { licenseType: 'clearkey', licenseKey: ck, isDrm: true };
-  const dk = ss(raw.drmKey);   if (dk) return { licenseType: 'clearkey', licenseKey: dk, isDrm: true };
-  const wv = ss(raw.widevineUrl); if (wv) return { licenseType: 'widevine', licenseKey: wv, isDrm: true };
-  return {};
+  if (Array.isArray(r.urls) && r.urls.length > 0) {
+    return ss(r.urls[0]);
+  }
+  // Single URL formats
+  return (
+    ss(r.link)        ||
+    ss(r.url)         ||
+    ss(r.stream)      ||
+    ss(r.src)         ||
+    ss(r.streamUrl)   ||
+    ss(r.stream_url)  ||
+    ss(r.playbackUrl) ||
+    ''
+  );
 }
 
-function extractHeaders(raw: RawJsonStream) {
+/** Extract ALL URLs from the item (handles streamUrls array) */
+function extractAllUrls(r: RawJsonStream): string[] {
+  // streamUrls array — YOUR FORMAT
+  if (Array.isArray(r.streamUrls) && r.streamUrls.length > 0) {
+    return r.streamUrls.map(u => ss(u)).filter(Boolean);
+  }
+  // urls array
+  if (Array.isArray(r.urls) && r.urls.length > 0) {
+    return r.urls.map(u => ss(u)).filter(Boolean);
+  }
+  // streams array
+  if (Array.isArray(r.streams) && r.streams.length > 0) {
+    const urls = r.streams.map(u => (typeof u === 'string' ? u : ss((u as RawJsonStream)?.url))).filter(Boolean);
+    if (urls.length > 0) return urls;
+  }
+  // Single URL
+  const single = extractPrimaryUrl(r);
+  return single ? [single] : [];
+}
+
+function extractName(r: RawJsonStream, idx: number): string {
+  return (
+    ss(r.name)        ||
+    ss(r.title)       ||
+    ss(r.channel)     ||
+    ss(r.channelName) ||
+    ss(r.channel_name)||
+    ss(r.label)       ||
+    ss(r.tvgName)     ||
+    ss(r.tvg_name)    ||
+    ss(r['tvg-name']) ||
+    `Channel ${idx + 1}`
+  );
+}
+
+function extractLogo(r: RawJsonStream): string | undefined {
+  return (
+    ss(r.logoUrl)      ||   // ← YOUR FORMAT
+    ss(r.logo_url)     ||
+    ss(r.logo)         ||
+    ss(r.icon)         ||
+    ss(r.image)        ||
+    ss(r.thumbnail)    ||
+    ss(r.poster)       ||
+    ss(r.tvgLogo)      ||
+    ss(r.tvg_logo)     ||
+    ss(r['tvg-logo'])  ||
+    undefined
+  );
+}
+
+function extractGroup(r: RawJsonStream): string {
+  const typeVal = ss(r.type);
+  return (
+    ss(r.group)        ||
+    ss(r.category)     ||   // ← YOUR FORMAT
+    ss(r.genre)        ||
+    ss(r.groupTitle)   ||
+    ss(r.group_title)  ||
+    ss(r['group-title'])||
+    (typeVal && !['hls', 'dash', 'direct'].includes(typeVal) ? typeVal : '') ||
+    'Uncategorized'
+  );
+}
+
+function extractTvgId(r: RawJsonStream): string | undefined {
+  return (
+    ss(r.tvgId)       ||
+    ss(r.tvg_id)      ||
+    ss(r['tvg-id'])   ||
+    ss(r.id)          ||   // ← YOUR FORMAT (e.g. "ThanthiOne.in")
+    ss(r.channelId)   ||
+    ss(r.channel_id)  ||
+    undefined
+  );
+}
+
+function extractHeaders(r: RawJsonStream): {
+  userAgent?: string;
+  referer?: string;
+  cookie?: string;
+  httpHeaders?: Record<string, string>;
+} {
   const result: { userAgent?: string; referer?: string; cookie?: string; httpHeaders?: Record<string, string> } = {};
-  const ua = ss(raw.userAgent) || ss(raw['user-agent']) || ss(raw.headers?.['User-Agent']) || ss(raw.headers?.['user-agent']);
+
+  const ua = ss(r.userAgent) || ss(r.user_agent) || ss(r['user-agent']) ||
+             ss(r.headers?.['User-Agent']) || ss(r.headers?.['user-agent']);
   if (ua) result.userAgent = ua;
-  const ref = ss(raw.referer) || ss(raw.headers?.['Referer']) || ss(raw.headers?.['referer']);
+
+  const ref = ss(r.referer) || ss(r.headers?.['Referer']) || ss(r.headers?.['referer']);
   if (ref) result.referer = ref;
-  const cookieVal = ss(raw.cookie) || ss(raw.headers?.['Cookie']) || ss(raw.headers?.['cookie']);
-  if (cookieVal) result.cookie = cookieVal;
-  const allHeaders: Record<string, string> = {};
-  if (raw.headers && typeof raw.headers === 'object') Object.entries(raw.headers).forEach(([k, v]) => { allHeaders[k] = ss(v); });
-  if (raw.httpHeaders && typeof raw.httpHeaders === 'object') Object.entries(raw.httpHeaders).forEach(([k, v]) => { allHeaders[k] = ss(v); });
-  if (Object.keys(allHeaders).length > 0) result.httpHeaders = allHeaders;
+
+  const ck = ss(r.cookie) || ss(r.headers?.['Cookie']) || ss(r.headers?.['cookie']);
+  if (ck) result.cookie = ck;
+
+  const all: Record<string, string> = {};
+  if (r.headers     && typeof r.headers     === 'object') Object.entries(r.headers).forEach(([k, v]) => { all[k] = ss(v); });
+  if (r.httpHeaders && typeof r.httpHeaders === 'object') Object.entries(r.httpHeaders).forEach(([k, v]) => { all[k] = ss(v); });
+  if (Object.keys(all).length > 0) result.httpHeaders = all;
+
   return result;
 }
 
-function parseOneStream(raw: RawJsonStream, sourceId: string, index: number): Channel | null {
-  const url = extractUrl(raw);
-  if (!url || !url.startsWith('http')) return null;
-  const name = extractName(raw);
-  const logo = extractLogo(raw);
-  const group = extractGroup(raw);
-  const drm = extractDRM(raw);
-  const headers = extractHeaders(raw);
-  const tvgId = ss(raw.tvgId) || ss(raw['tvg-id']) || undefined;
-  const tvgName = ss(raw.tvgName) || ss(raw['tvg-name']) || name;
-  const language = ss(raw.language) || undefined;
-  const country = ss(raw.country) || undefined;
-  // Use a plain object so DRM fields (licenseType, licenseKey, isDrm) can be detected
-  // by the store's hasDRM() filter and stripped before storing as a clean Channel
-  const built: Record<string, unknown> = {
-    id: `${sourceId}_json_${index}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    name, url, logo, group,
-    tvgId, tvgName, language, country,
-    sourceId, isActive: true, enabled: true, order: index,
-    streamType: detectStreamType(url),
-    ...drm, ...headers,
-  };
-  return built as unknown as Channel;
-}
+// ─── Flatten nested JSON to flat array of raw items ──────────────────────────
+function flattenJson(raw: unknown, depth = 0): RawJsonStream[] {
+  if (!raw || typeof raw !== 'object' || depth > 8) return [];
 
-function flattenJsonToStreams(raw: unknown): RawJsonStream[] {
-  if (!raw || typeof raw !== 'object') return [];
   if (Array.isArray(raw)) {
     const result: RawJsonStream[] = [];
     for (const item of raw) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const obj = item as RawJsonStream;
-      if (extractUrl(obj)) {
+      // Has a URL or streamUrls → it's a channel item
+      if (extractPrimaryUrl(obj)) {
         result.push(obj);
       } else {
-        const nested = obj.channels || obj.streams || obj.items;
-        if (nested) result.push(...flattenJsonToStreams(nested));
+        // Try nested keys
+        const nested =
+          (Array.isArray(obj.channels) ? obj.channels : null) ||
+          (Array.isArray(obj.streams)  ? obj.streams  : null) ||
+          (Array.isArray(obj.items)    ? obj.items    : null) ||
+          (Array.isArray(obj.playlist) ? obj.playlist : null);
+        if (nested) result.push(...flattenJson(nested, depth + 1));
       }
     }
     return result;
   }
-  // Plain object
+
+  // Object with wrapper keys
   const obj = raw as RawJsonStream;
-  if (obj.channels && Array.isArray(obj.channels)) return flattenJsonToStreams(obj.channels);
-  if (obj.streams  && Array.isArray(obj.streams))  return flattenJsonToStreams(obj.streams);
-  if (obj.items    && Array.isArray(obj.items))    return flattenJsonToStreams(obj.items);
+  if (Array.isArray(obj.channels)) return flattenJson(obj.channels, depth + 1);
+  if (Array.isArray(obj.streams))  return flattenJson(obj.streams,  depth + 1);
+  if (Array.isArray(obj.items))    return flattenJson(obj.items,    depth + 1);
+  if (Array.isArray(obj.playlist)) return flattenJson(obj.playlist, depth + 1);
+
   if (obj.data) {
-    if (Array.isArray(obj.data)) return flattenJsonToStreams(obj.data);
-    if (typeof obj.data === 'object' && !Array.isArray(obj.data)) {
-      const data = obj.data as { channels?: RawJsonStream[]; streams?: RawJsonStream[] };
-      if (data.channels) return flattenJsonToStreams(data.channels);
-      if (data.streams)  return flattenJsonToStreams(data.streams);
+    if (Array.isArray(obj.data)) return flattenJson(obj.data, depth + 1);
+    if (typeof obj.data === 'object') {
+      const d = obj.data as Record<string, unknown>;
+      if (d.channels) return flattenJson(d.channels, depth + 1);
+      if (d.streams)  return flattenJson(d.streams,  depth + 1);
+      if (d.items)    return flattenJson(d.items,    depth + 1);
     }
   }
-  if (extractUrl(obj)) return [obj];
+
+  if (extractPrimaryUrl(obj)) return [obj];
   return [];
 }
 
+// ─── Parse pipe-separated headers from URL ────────────────────────────────────
+function parsePipeUrl(raw: string): { url: string; userAgent?: string; referer?: string; cookie?: string } {
+  if (!raw.includes('|')) return { url: raw };
+  const parts = raw.split('|');
+  const url = parts[0].trim();
+  const res: { url: string; userAgent?: string; referer?: string; cookie?: string } = { url };
+  for (let i = 1; i < parts.length; i++) {
+    const eq = parts[i].indexOf('=');
+    if (eq === -1) continue;
+    const key = parts[i].substring(0, eq).trim().toLowerCase().replace(/-/g, '');
+    const val = parts[i].substring(eq + 1).trim();
+    if (!val) continue;
+    if (key === 'useragent') res.userAgent = val;
+    else if (key === 'referer' || key === 'referrer') res.referer = val;
+    else if (key === 'cookie') res.cookie = val;
+  }
+  return res;
+}
+
+// ─── Main parser ─────────────────────────────────────────────────────────────
 export function parseJsonSource(content: string, sourceId: string): Channel[] {
   let parsed: unknown;
-  try { parsed = JSON.parse(content); } catch { throw new Error('Invalid JSON'); }
-  const rawStreams = flattenJsonToStreams(parsed);
-  if (rawStreams.length === 0) throw new Error('No streams found in JSON');
+  try { parsed = JSON.parse(content); }
+  catch { throw new Error('Invalid JSON — could not parse source content'); }
+
+  const rawItems = flattenJson(parsed);
+  if (rawItems.length === 0) throw new Error('No channels found in JSON');
+
   const channels: Channel[] = [];
-  for (let i = 0; i < rawStreams.length; i++) {
-    const s = parseOneStream(rawStreams[i], sourceId, i);
-    if (s) channels.push(s);
+  let idx = 0;
+
+  for (const r of rawItems) {
+    if (hasDRM(r)) continue;
+
+    const allUrls = extractAllUrls(r);
+    if (allUrls.length === 0) continue;
+
+    const baseName  = extractName(r, idx);
+    const logo      = extractLogo(r);
+    const group     = extractGroup(r);
+    const tvgId     = extractTvgId(r);
+    const hdrs      = extractHeaders(r);
+    const language  = ss(r.language) || ss(r.lang) || undefined;
+    const country   = ss(r.country) || undefined;
+
+    // One channel per URL (streamUrls array → multiple entries)
+    allUrls.forEach((rawUrl, ui) => {
+      if (!rawUrl || !rawUrl.startsWith('http')) return;
+
+      const { url, userAgent, referer, cookie } = parsePipeUrl(rawUrl);
+      if (!url || !url.startsWith('http')) return;
+
+      const suffix = allUrls.length > 1 ? ` (${ui + 1})` : '';
+      const name   = baseName + suffix;
+
+      channels.push({
+        id:          `${sourceId}_json_${idx}_${ui}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name,
+        url,                                   // clean URL
+        rawUrl,                                // exact original (with pipe headers if any)
+        logo,
+        group,
+        tvgId:       tvgId || undefined,
+        tvgName:     name,
+        language,
+        country,
+        sourceId,
+        isActive:    true,
+        enabled:     true,
+        order:       idx * 10 + ui,
+        streamType:  detectStreamType(url),
+        userAgent:   hdrs.userAgent || userAgent || undefined,
+        referer:     hdrs.referer   || referer   || undefined,
+        cookie:      hdrs.cookie    || cookie    || undefined,
+        httpHeaders: hdrs.httpHeaders || undefined,
+      });
+    });
+
+    idx++;
   }
+
   return channels;
 }
 
@@ -157,6 +374,12 @@ export function looksLikeJson(content: string): boolean {
 
 export function isJsonUrl(url: string): boolean {
   const u = url.toLowerCase();
-  return u.endsWith('.json') || u.includes('/json') || u.includes('format=json') ||
-    u.includes('api/') || (u.includes('raw.githubusercontent.com') && u.endsWith('.json'));
+  return (
+    u.endsWith('.json') ||
+    u.includes('/json')  ||
+    u.includes('format=json') ||
+    u.includes('api/') ||
+    (u.includes('raw.githubusercontent.com') && u.endsWith('.json')) ||
+    (u.includes('gist.githubusercontent.com') && u.endsWith('.json'))
+  );
 }

@@ -74,6 +74,9 @@ interface AppState {
   deletePlaylist: (id: string)                                                  => void;
   getPlaylistM3U: (id: string)                                                  => string;
 
+  pruneEmptyGroups:        () => void;
+  removeNonTamilFromSource:(sourceId: string) => number;
+
   syncGroups:           () => void;
   exportDB:             () => string;
   syncDB:               () => Promise<void>;
@@ -139,6 +142,7 @@ export const useStore = create<AppState>((set, get) => ({
       channels: s.channels.filter(ch  => ch.sourceId !== id),
     }));
     get().syncGroups();
+    get().pruneEmptyGroups();
     get().syncDB();
   },
 
@@ -267,7 +271,29 @@ export const useStore = create<AppState>((set, get) => ({
   deleteChannel: (id) => {
     set(s => ({ channels: s.channels.filter(ch => ch.id !== id) }));
     get().syncGroups();
+    get().pruneEmptyGroups();
     get().syncDB();
+  },
+
+  // ── Remove all non-Tamil channels from a source ─────────────────────────────
+  removeNonTamilFromSource: (sourceId) => {
+    const { channels } = get();
+    const toRemove = channels.filter(ch => ch.sourceId === sourceId && !ch.isTamil);
+    set(s => ({ channels: s.channels.filter(ch => !(ch.sourceId === sourceId && !ch.isTamil)) }));
+    get().syncGroups();
+    get().pruneEmptyGroups();
+    get().syncDB();
+    return toRemove.length;
+  },
+
+  // ── Auto-delete groups that have zero channels ───────────────────────────────
+  pruneEmptyGroups: () => {
+    const { channels, groups } = get();
+    const usedGroups = new Set(channels.map(ch => ss(ch.group) || 'Uncategorized'));
+    const toDelete = groups.filter(g => !usedGroups.has(g.name));
+    if (toDelete.length > 0) {
+      set(s => ({ groups: s.groups.filter(g => usedGroups.has(g.name)) }));
+    }
   },
 
   toggleChannel: (id) => {

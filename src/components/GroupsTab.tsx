@@ -71,7 +71,7 @@ function MergeModal({
 
 // ── Channel mini-list inside a group card ─────────────────────────────────────
 function GroupChannelList({ groupName }: { groupName: string }) {
-  const { channels, deleteChannel, updateChannel, setSelectedGroup, setActiveTab } = useStore();
+  const { channels, deleteChannel, updateChannel, setSelectedGroup, setActiveTab, pruneEmptyGroups } = useStore();
   const [search, setSearch] = useState('');
   const chans = useMemo(() =>
     channels.filter(ch => ch.group === groupName &&
@@ -109,7 +109,7 @@ function GroupChannelList({ groupName }: { groupName: string }) {
               className={`w-6 h-3 rounded-full transition-colors relative shrink-0 ${ch.isActive ? 'bg-blue-600' : 'bg-gray-600'}`}>
               <div className={`absolute top-0.5 w-2 h-2 bg-white rounded-full transition-transform ${ch.isActive ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
             </button>
-            <button onClick={() => { deleteChannel(ch.id); toast.success('Channel removed'); }}
+            <button onClick={() => { deleteChannel(ch.id); pruneEmptyGroups(); toast.success('Channel removed'); }}
               className="opacity-0 group-hover:opacity-100 p-0.5 text-red-400 hover:text-red-300 transition-all">
               <Trash2 className="w-3 h-3" />
             </button>
