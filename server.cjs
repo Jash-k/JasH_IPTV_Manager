@@ -677,7 +677,7 @@ app.get('/api/sources', auth, (req, res) => res.json(DB.sources || []));
 
 app.patch('/api/source/:id', auth, (req, res) => {
   const src = (DB.sources || []).find(s => s.id === req.params.id);
-  if (!src) return res.status(404).json({ error: 'Not found' });\
+  if (!src) return res.status(404).json({ error: 'Not found' });
   Object.assign(src, req.body);
   saveDB(DB);
   res.json({ success: true, source: src });
