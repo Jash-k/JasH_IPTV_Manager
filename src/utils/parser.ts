@@ -162,7 +162,7 @@ export function generateM3U(
   for (const ch of filtered) {
     const name    = String(ch.name    || 'Unknown Channel');
     const logo    = String(ch.logo    || '');
-    const group   = String(ch.group   || 'Uncategorized');
+    const group   = String(ch.group   || 'General');
     const tvgId   = String(ch.tvgId   || ch.id || '');
     const tvgName = String(ch.tvgName || name);
 

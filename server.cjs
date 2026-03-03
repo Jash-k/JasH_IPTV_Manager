@@ -165,7 +165,7 @@ function generateM3U(channels, opts = {}) {
     const tvgId   = ch.tvgId   ? ` tvg-id="${esc(ch.tvgId)}"`           : '';
     const tvgName = ` tvg-name="${esc(ch.tvgName || ch.name)}"`;
     const logo    = ch.logo    ? ` tvg-logo="${esc(ch.logo)}"`           : '';
-    const group   = ` group-title="${esc(ch.group || 'Uncategorized')}"`;
+    const group   = ` group-title="${esc(ch.group || 'General')}"`;
     const tamil   = isTamil(ch) ? ' x-tamil="true"'                     : '';
 
     // EXACT original URL — includes pipe headers if present in source

@@ -5,14 +5,12 @@ import {
   Plus, Trash2, Edit2, Save, X, Eye, EyeOff,
   Layers, Star, Search, Filter, MoveRight,
   CheckSquare, Square, Tv2, ChevronDown, ChevronUp,
-  Copy, Check,
+  Copy, Check, AlertTriangle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-// ── Form state ────────────────────────────────────────────────────────────────
 interface GroupForm { name: string; logo: string }
 
-// ── Copy button ───────────────────────────────────────────────────────────────
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -25,9 +23,7 @@ function CopyBtn({ text }: { text: string }) {
 
 // ── Merge groups modal ────────────────────────────────────────────────────────
 function MergeModal({
-  sourceGroup,
-  onMerge,
-  onClose,
+  sourceGroup, onMerge, onClose,
 }: {
   sourceGroup: Group;
   onMerge: (targetName: string) => void;
@@ -69,9 +65,59 @@ function MergeModal({
   );
 }
 
+// ── Delete confirmation modal ─────────────────────────────────────────────────
+function DeleteConfirmModal({
+  group, channelCount, onConfirm, onClose,
+}: {
+  group: Group;
+  channelCount: number;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-800 border border-red-500/30 rounded-2xl p-6 w-full max-w-sm space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-5 h-5 text-red-400" />
+          </div>
+          <div>
+            <h3 className="text-white font-semibold">Delete Group</h3>
+            <p className="text-gray-400 text-sm">This cannot be undone</p>
+          </div>
+        </div>
+
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 space-y-2">
+          <p className="text-red-300 font-medium text-sm">"{group.name}"</p>
+          {channelCount > 0 ? (
+            <p className="text-red-400 text-sm">
+              ⚠️ This will permanently delete <strong>{channelCount} channels</strong> in this group.
+              They will <strong>not</strong> be moved anywhere.
+            </p>
+          ) : (
+            <p className="text-gray-400 text-sm">This group is empty — safe to delete.</p>
+          )}
+        </div>
+
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose}
+            className="px-4 py-2 text-gray-400 hover:text-white text-sm border border-gray-700 rounded-lg">
+            Cancel
+          </button>
+          <button onClick={onConfirm}
+            className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium">
+            <Trash2 className="w-4 h-4" />
+            Delete Group {channelCount > 0 ? `& ${channelCount} Channels` : ''}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Channel mini-list inside a group card ─────────────────────────────────────
 function GroupChannelList({ groupName }: { groupName: string }) {
-  const { channels, deleteChannel, updateChannel, setSelectedGroup, setActiveTab, pruneEmptyGroups } = useStore();
+  const { channels, deleteChannel, updateChannel, setSelectedGroup, setActiveTab } = useStore();
   const [search, setSearch] = useState('');
   const chans = useMemo(() =>
     channels.filter(ch => ch.group === groupName &&
@@ -100,16 +146,19 @@ function GroupChannelList({ groupName }: { groupName: string }) {
         {chans.slice(0, 30).map(ch => (
           <div key={ch.id} className="flex items-center gap-2 p-1.5 rounded-lg bg-gray-900/60 hover:bg-gray-900 transition-colors group">
             {ch.logo
-              ? <img src={ch.logo} alt="" className="w-5 h-5 rounded object-contain bg-gray-800" onError={e => (e.currentTarget.style.display='none')} />
-              : <div className="w-5 h-5 rounded bg-gray-700 flex items-center justify-center"><Tv2 className="w-3 h-3 text-gray-500" /></div>}
+              ? <img src={ch.logo} alt="" className="w-5 h-5 rounded object-contain bg-gray-800"
+                  onError={e => (e.currentTarget.style.display = 'none')} />
+              : <div className="w-5 h-5 rounded bg-gray-700 flex items-center justify-center">
+                  <Tv2 className="w-3 h-3 text-gray-500" />
+                </div>}
             <span className="flex-1 text-xs text-gray-300 truncate">{ch.name}</span>
             {ch.isTamil && <span className="text-orange-400 text-xs">🎬</span>}
             <CopyBtn text={ch.url} />
-            <button onClick={() => { updateChannel(ch.id, { isActive: !ch.isActive }); }}
+            <button onClick={() => updateChannel(ch.id, { isActive: !ch.isActive })}
               className={`w-6 h-3 rounded-full transition-colors relative shrink-0 ${ch.isActive ? 'bg-blue-600' : 'bg-gray-600'}`}>
               <div className={`absolute top-0.5 w-2 h-2 bg-white rounded-full transition-transform ${ch.isActive ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
             </button>
-            <button onClick={() => { deleteChannel(ch.id); pruneEmptyGroups(); toast.success('Channel removed'); }}
+            <button onClick={() => { deleteChannel(ch.id); toast.success('Channel deleted'); }}
               className="opacity-0 group-hover:opacity-100 p-0.5 text-red-400 hover:text-red-300 transition-all">
               <Trash2 className="w-3 h-3" />
             </button>
@@ -125,10 +174,7 @@ function GroupChannelList({ groupName }: { groupName: string }) {
 
 // ── Group card ────────────────────────────────────────────────────────────────
 function GroupCard({
-  g,
-  onEdit,
-  onDelete,
-  onMerge,
+  g, onEdit, onDelete, onMerge,
 }: {
   g: Group;
   onEdit: (g: Group) => void;
@@ -138,9 +184,9 @@ function GroupCard({
   const { toggleGroup, channels, setSelectedGroup, setActiveTab, setShowTamilOnly } = useStore();
   const [expanded, setExpanded] = useState(false);
 
-  const chCount = channels.filter(ch => ch.group === g.name).length;
+  const chCount    = channels.filter(ch => ch.group === g.name).length;
   const tamilCount = channels.filter(ch => ch.group === g.name && ch.isTamil).length;
-  const activeCount = channels.filter(ch => ch.group === g.name && ch.isActive).length;
+  const activeCount= channels.filter(ch => ch.group === g.name && ch.isActive).length;
 
   return (
     <div className={`bg-gray-800 border rounded-xl transition-all ${
@@ -188,7 +234,7 @@ function GroupCard({
               className="p-1.5 text-gray-400 hover:text-purple-400 transition-colors rounded-lg hover:bg-gray-700">
               <MoveRight className="w-3.5 h-3.5" />
             </button>
-            <button onClick={() => onDelete(g)} title="Delete group"
+            <button onClick={() => onDelete(g)} title="Delete group and all its channels"
               className="p-1.5 text-gray-400 hover:text-red-400 transition-colors rounded-lg hover:bg-gray-700">
               <Trash2 className="w-3.5 h-3.5" />
             </button>
@@ -233,9 +279,7 @@ function GroupCard({
 
 // ── Add/Edit Form ─────────────────────────────────────────────────────────────
 function GroupFormPanel({
-  editGroup,
-  onSave,
-  onClose,
+  editGroup, onSave, onClose,
 }: {
   editGroup: Group | null;
   onSave: (f: GroupForm) => void;
@@ -282,10 +326,7 @@ function GroupFormPanel({
 
 // ── Bulk group actions bar ────────────────────────────────────────────────────
 function BulkGroupBar({
-  selected,
-  onToggleAll,
-  onDeleteAll,
-  onClear,
+  selected, onToggleAll, onDeleteAll, onClear,
 }: {
   selected: Set<string>;
   onToggleAll: (active: boolean) => void;
@@ -307,7 +348,7 @@ function BulkGroupBar({
         </button>
         <button onClick={onDeleteAll}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600/20 border border-red-500/30 text-red-400 rounded-lg text-xs font-medium">
-          <Trash2 className="w-3 h-3" /> Delete ({selected.size})
+          <Trash2 className="w-3 h-3" /> Delete ({selected.size}) + Channels
         </button>
         <button onClick={onClear} className="flex items-center gap-1.5 px-3 py-1.5 text-gray-400 hover:text-white text-xs">
           <X className="w-3 h-3" /> Clear
@@ -325,13 +366,14 @@ export default function GroupsTab() {
     setActiveTab, setShowTamilOnly,
   } = useStore();
 
-  const [showForm,     setShowForm]     = useState(false);
-  const [editGroup,    setEditGroup]    = useState<Group | null>(null);
-  const [mergeGroup,   setMergeGroup]   = useState<Group | null>(null);
-  const [search,       setSearch]       = useState('');
-  const [filterTamil,  setFilterTamil]  = useState(false);
-  const [selected,     setSelected]     = useState<Set<string>>(new Set());
-  const [sortBy,       setSortBy]       = useState<'name' | 'count' | 'tamil'>('count');
+  const [showForm,    setShowForm]    = useState(false);
+  const [editGroup,   setEditGroup]   = useState<Group | null>(null);
+  const [mergeGroup,  setMergeGroup]  = useState<Group | null>(null);
+  const [deleteModal, setDeleteModal] = useState<Group | null>(null);
+  const [search,      setSearch]      = useState('');
+  const [filterTamil, setFilterTamil] = useState(false);
+  const [selected,    setSelected]    = useState<Set<string>>(new Set());
+  const [sortBy,      setSortBy]      = useState<'name' | 'count' | 'tamil'>('count');
 
   const filteredGroups = useMemo(() => {
     let gs = [...groups];
@@ -343,16 +385,14 @@ export default function GroupsTab() {
     return gs;
   }, [groups, filterTamil, search, sortBy]);
 
-  const tamilGroups  = groups.filter(g => g.isTamil).length;
-  const totalChannels= channels.length;
-  const activeGroups = groups.filter(g => g.isActive).length;
+  const tamilGroups   = groups.filter(g => g.isTamil).length;
+  const totalChannels = channels.length;
+  const activeGroups  = groups.filter(g => g.isActive).length;
 
-  // ── Selection ─────────────────────────────────────────────────────────
   const toggleSelect = (id: string) =>
     setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const allSelected = filteredGroups.length > 0 && filteredGroups.every(g => selected.has(g.id));
-
   const toggleSelectAll = () => {
     if (allSelected) {
       setSelected(prev => { const n = new Set(prev); filteredGroups.forEach(g => n.delete(g.id)); return n; });
@@ -361,7 +401,6 @@ export default function GroupsTab() {
     }
   };
 
-  // ── Handlers ──────────────────────────────────────────────────────────
   const handleSave = (form: GroupForm) => {
     if (editGroup) {
       updateGroup(editGroup.id, { name: form.name, logo: form.logo || undefined });
@@ -374,14 +413,13 @@ export default function GroupsTab() {
     setShowForm(false);
   };
 
-  const handleDelete = (g: Group) => {
-    const count = channels.filter(ch => ch.group === g.name).length;
-    const msg   = count > 0
-      ? `Delete "${g.name}" and move ${count} channels to Uncategorized?`
-      : `Delete empty group "${g.name}"?`;
-    if (!confirm(msg)) return;
-    deleteGroup(g.id);
-    toast.success(`🗑️ "${g.name}" deleted`);
+  // ── Delete: removes group AND all its channels ────────────────────────────
+  const handleDeleteConfirm = () => {
+    if (!deleteModal) return;
+    const count = channels.filter(ch => ch.group === deleteModal.name).length;
+    deleteGroup(deleteModal.id); // store.deleteGroup now filters out channels too
+    toast.success(`🗑️ "${deleteModal.name}" deleted${count > 0 ? ` with ${count} channels` : ''}`);
+    setDeleteModal(null);
   };
 
   const handleMerge = (targetName: string) => {
@@ -404,12 +442,15 @@ export default function GroupsTab() {
     setSelected(new Set());
   };
 
+  // ── Bulk delete: removes groups AND their channels ────────────────────────
   const handleBulkDelete = () => {
     const selGroups = groups.filter(g => selected.has(g.id));
     const totalChs  = selGroups.reduce((sum, g) => sum + (g.channelCount || 0), 0);
-    if (!confirm(`Delete ${selected.size} groups${totalChs > 0 ? ` and move ${totalChs} channels to Uncategorized` : ''}?`)) return;
+    if (!confirm(
+      `Delete ${selected.size} groups${totalChs > 0 ? ` and permanently remove ${totalChs} channels` : ''}?\n\nChannels will NOT be moved — they will be deleted.`
+    )) return;
     selGroups.forEach(g => deleteGroup(g.id));
-    toast.success(`🗑️ ${selected.size} groups deleted`);
+    toast.success(`🗑️ ${selected.size} groups and their channels deleted`);
     setSelected(new Set());
   };
 
@@ -418,6 +459,16 @@ export default function GroupsTab() {
       {/* Merge modal */}
       {mergeGroup && (
         <MergeModal sourceGroup={mergeGroup} onMerge={handleMerge} onClose={() => setMergeGroup(null)} />
+      )}
+
+      {/* Delete confirm modal */}
+      {deleteModal && (
+        <DeleteConfirmModal
+          group={deleteModal}
+          channelCount={channels.filter(ch => ch.group === deleteModal.name).length}
+          onConfirm={handleDeleteConfirm}
+          onClose={() => setDeleteModal(null)}
+        />
       )}
 
       {/* ── Header ──────────────────────────────────────────────────── */}
@@ -438,16 +489,24 @@ export default function GroupsTab() {
       {/* ── Stats row ───────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { label: 'Total Groups',   value: groups.length,          color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/20' },
-          { label: 'Active Groups',  value: activeGroups,           color: 'text-green-400',  bg: 'bg-green-500/10 border-green-500/20' },
-          { label: 'Tamil Groups',   value: tamilGroups,            color: 'text-orange-400', bg: 'bg-orange-500/10 border-orange-500/20' },
-          { label: 'Total Channels', value: totalChannels,          color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/20' },
+          { label: 'Total Groups',   value: groups.length,    color: 'text-blue-400',   bg: 'bg-blue-500/10 border-blue-500/20' },
+          { label: 'Active Groups',  value: activeGroups,     color: 'text-green-400',  bg: 'bg-green-500/10 border-green-500/20' },
+          { label: 'Tamil Groups',   value: tamilGroups,      color: 'text-orange-400', bg: 'bg-orange-500/10 border-orange-500/20' },
+          { label: 'Total Channels', value: totalChannels,    color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/20' },
         ].map(s => (
           <div key={s.label} className={`${s.bg} border rounded-xl p-3 text-center`}>
             <p className={`text-2xl font-bold ${s.color}`}>{s.value.toLocaleString()}</p>
             <p className="text-gray-500 text-xs mt-0.5">{s.label}</p>
           </div>
         ))}
+      </div>
+
+      {/* ── Delete warning notice ────────────────────────────────────── */}
+      <div className="flex items-center gap-2 bg-red-500/5 border border-red-500/20 rounded-xl px-4 py-2.5">
+        <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+        <p className="text-red-400 text-xs">
+          <strong>Deleting a group permanently deletes all its channels.</strong> Use "Merge" to move channels to another group first.
+        </p>
       </div>
 
       {/* ── Add/Edit form ────────────────────────────────────────────── */}
@@ -469,7 +528,6 @@ export default function GroupsTab() {
 
       {/* ── Filters + sort ───────────────────────────────────────────── */}
       <div className="flex items-center gap-3 flex-wrap">
-        {/* Search */}
         <div className="relative flex-1 min-w-48">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
           <input value={search} onChange={e => setSearch(e.target.value)}
@@ -477,7 +535,6 @@ export default function GroupsTab() {
             placeholder="Search groups…" />
         </div>
 
-        {/* Tamil filter */}
         <button onClick={() => setFilterTamil(!filterTamil)}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all border ${
             filterTamil
@@ -491,7 +548,6 @@ export default function GroupsTab() {
           </span>
         </button>
 
-        {/* Sort */}
         <select value={sortBy} onChange={e => setSortBy(e.target.value as typeof sortBy)}
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
           <option value="count">Sort: Most Channels</option>
@@ -499,13 +555,11 @@ export default function GroupsTab() {
           <option value="tamil">Sort: Tamil First</option>
         </select>
 
-        {/* View Tamil channels */}
         <button onClick={() => { setShowTamilOnly(true); setActiveTab('channels'); }}
           className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm font-medium transition-colors">
           <Star className="w-4 h-4 fill-white" /> All Tamil Channels
         </button>
 
-        {/* Clear filters */}
         {(filterTamil || search) && (
           <button onClick={() => { setFilterTamil(false); setSearch(''); }}
             className="flex items-center gap-1.5 px-3 py-2 bg-gray-800 border border-gray-700 text-gray-400 hover:text-white rounded-lg text-sm">
@@ -551,7 +605,6 @@ export default function GroupsTab() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {filteredGroups.map(g => (
             <div key={g.id} className="relative">
-              {/* Selection checkbox */}
               <button onClick={() => toggleSelect(g.id)}
                 className="absolute top-3 left-3 z-10 text-gray-500 hover:text-yellow-400 transition-colors">
                 {selected.has(g.id)
@@ -562,7 +615,7 @@ export default function GroupsTab() {
                 <GroupCard
                   g={g}
                   onEdit={g => { setEditGroup(g); setShowForm(false); }}
-                  onDelete={handleDelete}
+                  onDelete={g => setDeleteModal(g)}
                   onMerge={setMergeGroup}
                 />
               </div>

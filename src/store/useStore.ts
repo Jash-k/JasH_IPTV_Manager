@@ -77,10 +77,10 @@ interface AppState {
   pruneEmptyGroups:        () => void;
   removeNonTamilFromSource:(sourceId: string) => number;
 
-  syncGroups:           () => void;
-  exportDB:             () => string;
-  syncDB:               () => Promise<void>;
-  syncToServer:         () => Promise<void>;
+  syncGroups:             () => void;
+  exportDB:               () => string;
+  syncDB:                 () => Promise<void>;
+  syncToServer:           () => Promise<void>;
   tagMultiSourceChannels: () => void;
 }
 
@@ -141,7 +141,6 @@ export const useStore = create<AppState>((set, get) => ({
       sources:  s.sources.filter(src => src.id !== id),
       channels: s.channels.filter(ch  => ch.sourceId !== id),
     }));
-    get().syncGroups();
     get().pruneEmptyGroups();
     get().syncDB();
   },
@@ -164,8 +163,9 @@ export const useStore = create<AppState>((set, get) => ({
         id          : ch.id,
         name        : ch.name,
         url         : ch.url,
+        rawUrl      : ch.rawUrl,
         logo        : ch.logo,
-        group       : ch.group,
+        group       : ch.group || 'General',
         tvgId       : ch.tvgId,
         tvgName     : ch.tvgName,
         language    : ch.language,
@@ -224,10 +224,10 @@ export const useStore = create<AppState>((set, get) => ({
       byName[key].push(ch);
     });
     const updated = channels.map(ch => {
-      const key       = normName(ch.name);
-      const siblings  = byName[key] || [];
-      const hasMulti  = siblings.length > 1 && new Set(siblings.map(c => c.sourceId)).size > 1;
-      if (!hasMulti)  return { ...ch, multiSource: false, combinedLinks: undefined };
+      const key      = normName(ch.name);
+      const siblings = byName[key] || [];
+      const hasMulti = siblings.length > 1 && new Set(siblings.map(c => c.sourceId)).size > 1;
+      if (!hasMulti) return { ...ch, multiSource: false, combinedLinks: undefined };
       return {
         ...ch,
         multiSource   : true,
@@ -248,6 +248,7 @@ export const useStore = create<AppState>((set, get) => ({
     const newCh: Channel = {
       ...channel,
       id     : uuidv4(),
+      group  : channel.group || 'General',
       isTamil: isTamilChannel(String(channel.name||''), String(channel.group||''), String(channel.language||'')),
     };
     set(s => ({ channels: [...s.channels, newCh] }));
@@ -261,16 +262,20 @@ export const useStore = create<AppState>((set, get) => ({
       channels: s.channels.map(ch => {
         if (ch.id !== id) return ch;
         const updated = { ...ch, ...updates };
-        return { ...updated, isTamil: isTamilChannel(String(updated.name||''), String(updated.group||''), String(updated.language||'')) };
+        return {
+          ...updated,
+          group  : updated.group || 'General',
+          isTamil: isTamilChannel(String(updated.name||''), String(updated.group||''), String(updated.language||'')),
+        };
       }),
     }));
     get().syncGroups();
+    get().pruneEmptyGroups();
     get().syncDB();
   },
 
   deleteChannel: (id) => {
     set(s => ({ channels: s.channels.filter(ch => ch.id !== id) }));
-    get().syncGroups();
     get().pruneEmptyGroups();
     get().syncDB();
   },
@@ -280,19 +285,18 @@ export const useStore = create<AppState>((set, get) => ({
     const { channels } = get();
     const toRemove = channels.filter(ch => ch.sourceId === sourceId && !ch.isTamil);
     set(s => ({ channels: s.channels.filter(ch => !(ch.sourceId === sourceId && !ch.isTamil)) }));
-    get().syncGroups();
     get().pruneEmptyGroups();
     get().syncDB();
     return toRemove.length;
   },
 
-  // ── Auto-delete groups that have zero channels ───────────────────────────────
+  // ── Auto-delete groups with zero channels (no Uncategorized fallback) ────────
   pruneEmptyGroups: () => {
     const { channels, groups } = get();
-    const usedGroups = new Set(channels.map(ch => ss(ch.group) || 'Uncategorized'));
-    const toDelete = groups.filter(g => !usedGroups.has(g.name));
-    if (toDelete.length > 0) {
-      set(s => ({ groups: s.groups.filter(g => usedGroups.has(g.name)) }));
+    const usedGroups = new Set(channels.map(ch => ss(ch.group) || 'General').filter(Boolean));
+    const pruned = groups.filter(g => usedGroups.has(g.name));
+    if (pruned.length !== groups.length) {
+      set({ groups: pruned });
     }
   },
 
@@ -322,6 +326,7 @@ export const useStore = create<AppState>((set, get) => ({
       ),
     }));
     get().syncGroups();
+    get().pruneEmptyGroups();
     get().syncDB();
   },
 
@@ -345,16 +350,14 @@ export const useStore = create<AppState>((set, get) => ({
     get().syncDB();
   },
 
+  // ── Delete group AND all its channels — no Uncategorized fallback ────────────
   deleteGroup: (id) => {
-    const group = get().groups.find(g => g.id === id);
-    set(s => ({ groups: s.groups.filter(g => g.id !== id) }));
-    if (group) {
-      set(s => ({
-        channels: s.channels.map(ch =>
-          ch.group === group.name ? { ...ch, group: 'Uncategorized' } : ch
-        ),
-      }));
-    }
+    const grp = get().groups.find(g => g.id === id);
+    if (!grp) return;
+    set(s => ({
+      groups:   s.groups.filter(g => g.id !== id),
+      channels: s.channels.filter(ch => ch.group !== grp.name),
+    }));
     get().syncDB();
   },
 
@@ -368,7 +371,7 @@ export const useStore = create<AppState>((set, get) => ({
   // ── Auto-sync groups from channel data ─────────────────────────────────────
   syncGroups: () => {
     const { channels, groups } = get();
-    const groupNames    = [...new Set(channels.map(ch => ss(ch.group) || 'Uncategorized'))];
+    const groupNames    = [...new Set(channels.map(ch => ss(ch.group) || 'General').filter(Boolean))];
     const existingNames = new Set(groups.map(g => g.name));
     const newGroups: Group[] = [];
     groupNames.forEach(name => {
@@ -386,6 +389,7 @@ export const useStore = create<AppState>((set, get) => ({
       }
     });
     if (newGroups.length) set(s => ({ groups: [...s.groups, ...newGroups] }));
+    // Update channelCount and isTamil for all groups
     set(s => ({
       groups: s.groups.map(g => ({
         ...g,
@@ -396,6 +400,8 @@ export const useStore = create<AppState>((set, get) => ({
           s.channels.filter(ch => ss(ch.group) === g.name).some(ch => ch.isTamil),
       })),
     }));
+    // Remove groups with no channels
+    get().pruneEmptyGroups();
   },
 
   // ── Playlists ───────────────────────────────────────────────────────────────

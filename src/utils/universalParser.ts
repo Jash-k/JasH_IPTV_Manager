@@ -146,7 +146,7 @@ function parseM3UContent(text: string): ParsedPartial[] {
         tvgId:    attr(line, 'tvg-id'),
         tvgName:  attr(line, 'tvg-name'),
         logo:     attr(line, 'tvg-logo'),
-        group:    attr(line, 'group-title') || 'Uncategorized',
+        group:    attr(line, 'group-title') || 'General',
         language: attr(line, 'tvg-language'),
         country:  attr(line, 'tvg-country'),
       };
@@ -191,7 +191,7 @@ function parseM3UContent(text: string): ParsedPartial[] {
         url,
         rawUrl:      exactLine,
         logo:        current.logo,
-        group:       current.group       || 'Uncategorized',
+        group:       current.group       || 'General',
         tvgId:       current.tvgId,
         tvgName:     current.tvgName,
         language:    current.language,
@@ -340,7 +340,7 @@ function getRawGroup(r: RawItem): string {
     ss(r.group_title)   ||
     ss(r['group-title'])||
     (typeVal && !['hls', 'dash', 'direct'].includes(typeVal) ? typeVal : '') ||
-    'Uncategorized'
+    'General'
   );
 }
 
@@ -489,7 +489,7 @@ function parsePlainTextContent(text: string): ParsedPartial[] {
         name,
         url,
         rawUrl,
-        group: 'Uncategorized',
+        group: 'General',
         streamType: detectStreamType(url),
       } as ParsedPartial;
     })
@@ -574,7 +574,7 @@ export function universalParse(content: string, sourceId: string): Channel[] {
     url:         p.url,
     rawUrl:      p.rawUrl      || p.url,
     logo:        p.logo        || undefined,
-    group:       p.group       || 'Uncategorized',
+    group:       p.group       || 'General',
     tvgId:       p.tvgId       || undefined,
     tvgName:     p.tvgName     || p.name || 'Unknown Channel',
     language:    p.language    || undefined,
