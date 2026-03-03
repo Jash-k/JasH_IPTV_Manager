@@ -1,84 +1,21 @@
 import { create } from 'zustand';
-import { Channel, Group, Source, PlaylistConfig, TabType, CombinedLink } from '../types';
+import { Channel, Group, Source, PlaylistConfig, TabType } from '../types';
 import { parseAny, generateM3U, isTamilChannel } from '../utils/parser';
 import { fetchUrl as fetchSourceContent } from '../utils/fetcher';
 import { v4 as uuidv4 } from 'uuid';
 
-const BASE_URL = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:10000';
+const BASE_URL      = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:10000';
 const PLAYLIST_BASE = `${BASE_URL}/api/playlist`;
 
 async function pushToServer(url: string, data: object): Promise<void> {
   try {
     await fetch(`${url}/api/sync`, {
-      method: 'POST',
+      method : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-      signal: AbortSignal.timeout(8000),
+      body   : JSON.stringify(data),
+      signal : AbortSignal.timeout(8000),
     });
   } catch { /* server may not be running in dev */ }
-}
-
-interface BestLinkResult {
-  channelName: string;
-  totalLinks: number;
-  liveLinks: number;
-  best: { id: string; url: string; latency: number } | null;
-  all: Array<{ id: string; url: string; ok: boolean; latency: number }>;
-}
-
-interface AppState {
-  channels:   Channel[];
-  groups:     Group[];
-  sources:    Source[];
-  playlists:  PlaylistConfig[];
-  activeTab:  TabType;
-  selectedGroup:     string | null;
-  showTamilOnly:     boolean;
-  tamilSourceFilter: boolean;
-  searchQuery:       string;
-  serverUrl:         string;
-
-  setActiveTab:         (tab: TabType) => void;
-  setSelectedGroup:     (group: string | null) => void;
-  setShowTamilOnly:     (v: boolean) => void;
-  setTamilSourceFilter: (v: boolean) => void;
-  setSearchQuery:       (q: string) => void;
-  setServerUrl:         (url: string) => void;
-
-  getSourceChannels:      (sourceId: string, tamilOnly?: boolean) => Channel[];
-  getFilteredChannels:    () => Channel[];
-  getMultiSourceChannels: () => Array<{ name: string; channels: Channel[] }>;
-
-  addSource:    (source: Omit<Source, 'id' | 'status'>) => void;
-  updateSource: (id: string, updates: Partial<Source>) => void;
-  deleteSource: (id: string) => void;
-  loadSource:   (id: string) => Promise<void>;
-
-  addChannel:         (channel: Omit<Channel, 'id'>) => void;
-  updateChannel:      (id: string, updates: Partial<Channel>) => void;
-  deleteChannel:      (id: string) => void;
-  toggleChannel:      (id: string) => void;
-  reorderChannels:    (fromIdx: number, toIdx: number) => void;
-  moveChannelToGroup: (channelId: string, groupName: string) => void;
-
-  addGroup:    (group: Omit<Group, 'id'>) => void;
-  updateGroup: (id: string, updates: Partial<Group>) => void;
-  deleteGroup: (id: string) => void;
-  toggleGroup: (id: string) => void;
-
-  createPlaylist: (name: string, includeGroups: string[], tamilOnly?: boolean) => PlaylistConfig;
-  updatePlaylist: (id: string, updates: Partial<PlaylistConfig>) => void;
-  deletePlaylist: (id: string) => void;
-  getPlaylistM3U: (id: string) => string;
-
-  syncGroups:    () => void;
-  exportDB:      () => string;
-  syncDB:        () => Promise<void>;
-  syncToServer:  () => Promise<void>;
-
-  getBestLink:          (channelName: string) => Promise<BestLinkResult | null>;
-  tagMultiSourceChannels: () => void;
-  checkCombinedLinks:   (channelName: string) => Promise<CombinedLink[]>;
 }
 
 function normName(n: string) {
@@ -90,6 +27,58 @@ const ss = (v: unknown): string =>
 
 function hasDRM(ch: Record<string, unknown>): boolean {
   return !!(ch.licenseType || ch.licenseKey || ch.drmKey || ch.drmKeyId || ch.isDrm);
+}
+
+interface AppState {
+  channels:          Channel[];
+  groups:            Group[];
+  sources:           Source[];
+  playlists:         PlaylistConfig[];
+  activeTab:         TabType;
+  selectedGroup:     string | null;
+  showTamilOnly:     boolean;
+  tamilSourceFilter: boolean;
+  searchQuery:       string;
+  serverUrl:         string;
+
+  setActiveTab:         (tab: TabType)           => void;
+  setSelectedGroup:     (group: string | null)   => void;
+  setShowTamilOnly:     (v: boolean)             => void;
+  setTamilSourceFilter: (v: boolean)             => void;
+  setSearchQuery:       (q: string)              => void;
+  setServerUrl:         (url: string)            => void;
+
+  getSourceChannels:      (sourceId: string, tamilOnly?: boolean) => Channel[];
+  getFilteredChannels:    () => Channel[];
+  getMultiSourceChannels: () => Array<{ name: string; channels: Channel[] }>;
+
+  addSource:    (source: Omit<Source, 'id' | 'status'>)       => void;
+  updateSource: (id: string, updates: Partial<Source>)         => void;
+  deleteSource: (id: string)                                   => void;
+  loadSource:   (id: string)                                   => Promise<void>;
+
+  addChannel:         (channel: Omit<Channel, 'id'>)           => void;
+  updateChannel:      (id: string, updates: Partial<Channel>)  => void;
+  deleteChannel:      (id: string)                             => void;
+  toggleChannel:      (id: string)                             => void;
+  reorderChannels:    (fromIdx: number, toIdx: number)         => void;
+  moveChannelToGroup: (channelId: string, groupName: string)   => void;
+
+  addGroup:    (group: Omit<Group, 'id'>)                      => void;
+  updateGroup: (id: string, updates: Partial<Group>)           => void;
+  deleteGroup: (id: string)                                    => void;
+  toggleGroup: (id: string)                                    => void;
+
+  createPlaylist: (name: string, includeGroups: string[], tamilOnly?: boolean) => PlaylistConfig;
+  updatePlaylist: (id: string, updates: Partial<PlaylistConfig>)                => void;
+  deletePlaylist: (id: string)                                                  => void;
+  getPlaylistM3U: (id: string)                                                  => string;
+
+  syncGroups:           () => void;
+  exportDB:             () => string;
+  syncDB:               () => Promise<void>;
+  syncToServer:         () => Promise<void>;
+  tagMultiSourceChannels: () => void;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -111,13 +100,15 @@ export const useStore = create<AppState>((set, get) => ({
   setSearchQuery:       (q)     => set({ searchQuery: q }),
   setServerUrl:         (url)   => set({ serverUrl: url }),
 
+  // ── Source channel helpers ──────────────────────────────────────────────────
   getSourceChannels: (sourceId, tamilOnly = false) =>
     get().channels.filter(ch =>
       ch.sourceId === sourceId && (tamilOnly ? ch.isTamil : true)
     ),
 
+  // ── Multi-source grouping ───────────────────────────────────────────────────
   getMultiSourceChannels: () => {
-    const { channels, sources } = get();
+    const { channels } = get();
     const byName: Record<string, Channel[]> = {};
     channels.forEach(ch => {
       const key = normName(ch.name);
@@ -126,22 +117,10 @@ export const useStore = create<AppState>((set, get) => ({
     });
     return Object.entries(byName)
       .filter(([, chs]) => chs.length > 1 && new Set(chs.map(c => c.sourceId)).size > 1)
-      .map(([, chs]) => ({
-        name: chs[0].name,
-        channels: chs.map(ch => ({
-          ...ch,
-          combinedLinks: chs.map(c => ({
-            channelId:  c.id,
-            sourceId:   c.sourceId,
-            sourceName: sources.find(s => s.id === c.sourceId)?.name || c.sourceId,
-            url:        c.url,
-            status:     'unknown' as const,
-          })),
-          multiSource: true,
-        })),
-      }));
+      .map(([, chs]) => ({ name: chs[0].name, channels: chs }));
   },
 
+  // ── Sources ─────────────────────────────────────────────────────────────────
   addSource: (source) => {
     const newSource: Source = { ...source, id: uuidv4(), status: 'idle' };
     set(s => ({ sources: [...s.sources, newSource] }));
@@ -169,35 +148,35 @@ export const useStore = create<AppState>((set, get) => ({
     get().updateSource(id, { status: 'loading' });
     try {
       let content = '';
-      if (source.content)   content = source.content;
-      else if (source.url)  content = await fetchSourceContent(source.url);
+      if (source.content)  content = source.content;
+      else if (source.url) content = await fetchSourceContent(source.url);
       else throw new Error('No URL or content provided');
 
-      const parsed = parseAny(content, id) as Array<Channel & Record<string, unknown>>;
+      const parsed         = parseAny(content, id) as Array<Channel & Record<string, unknown>>;
       const directChannels = parsed.filter(ch => !hasDRM(ch));
-      const drmCount = parsed.length - directChannels.length;
+      const drmCount       = parsed.length - directChannels.length;
 
       const taggedChannels: Channel[] = directChannels.map(ch => ({
-        id:           ch.id,
-        name:         ch.name,
-        url:          ch.url,
-        logo:         ch.logo,
-        group:        ch.group,
-        tvgId:        ch.tvgId,
-        tvgName:      ch.tvgName,
-        language:     ch.language,
-        country:      ch.country,
-        isActive:     true,
-        enabled:      true,
-        order:        ch.order ?? 0,
-        sourceId:     ch.sourceId,
-        tags:         ch.tags,
-        streamType:   ch.streamType,
-        userAgent:    ch.userAgent,
-        referer:      ch.referer,
-        cookie:       ch.cookie,
-        httpHeaders:  ch.httpHeaders,
-        isTamil:      isTamilChannel(ch),
+        id          : ch.id,
+        name        : ch.name,
+        url         : ch.url,
+        logo        : ch.logo,
+        group       : ch.group,
+        tvgId       : ch.tvgId,
+        tvgName     : ch.tvgName,
+        language    : ch.language,
+        country     : ch.country,
+        isActive    : true,
+        enabled     : true,
+        order       : ch.order ?? 0,
+        sourceId    : ch.sourceId,
+        tags        : ch.tags,
+        streamType  : ch.streamType,
+        userAgent   : ch.userAgent,
+        referer     : ch.referer,
+        cookie      : ch.cookie,
+        httpHeaders : ch.httpHeaders,
+        isTamil     : isTamilChannel(ch),
         healthStatus: 'unknown' as const,
       }));
 
@@ -211,11 +190,11 @@ export const useStore = create<AppState>((set, get) => ({
       }));
 
       get().updateSource(id, {
-        status:        'success',
+        status       : 'success',
         lastRefreshed: new Date().toISOString(),
-        channelCount:  taggedChannels.length,
+        channelCount : taggedChannels.length,
         tamilCount,
-        errorMessage:  drmCount > 0
+        errorMessage : drmCount > 0
           ? `✅ ${taggedChannels.length} direct channels. ${drmCount} DRM streams removed.`
           : undefined,
       });
@@ -225,12 +204,13 @@ export const useStore = create<AppState>((set, get) => ({
       get().syncDB();
     } catch (err) {
       get().updateSource(id, {
-        status:       'error',
+        status      : 'error',
         errorMessage: err instanceof Error ? err.message : 'Unknown error',
       });
     }
   },
 
+  // ── Tag multi-source channels ───────────────────────────────────────────────
   tagMultiSourceChannels: () => {
     const { channels, sources } = get();
     const byName: Record<string, Channel[]> = {};
@@ -240,30 +220,30 @@ export const useStore = create<AppState>((set, get) => ({
       byName[key].push(ch);
     });
     const updated = channels.map(ch => {
-      const key      = normName(ch.name);
-      const siblings = byName[key] || [];
-      const hasMultiple =
-        siblings.length > 1 && new Set(siblings.map(c => c.sourceId)).size > 1;
-      if (!hasMultiple) return { ...ch, multiSource: false, combinedLinks: undefined };
+      const key       = normName(ch.name);
+      const siblings  = byName[key] || [];
+      const hasMulti  = siblings.length > 1 && new Set(siblings.map(c => c.sourceId)).size > 1;
+      if (!hasMulti)  return { ...ch, multiSource: false, combinedLinks: undefined };
       return {
         ...ch,
-        multiSource: true,
-        combinedLinks: siblings.map(c => ({
-          channelId:  c.id,
-          sourceId:   c.sourceId,
+        multiSource   : true,
+        combinedLinks : siblings.map(c => ({
+          channelId : c.id,
+          sourceId  : c.sourceId,
           sourceName: sources.find(s => s.id === c.sourceId)?.name || c.sourceId,
-          url:        c.url,
-          status:     'unknown' as const,
+          url       : c.url,
+          status    : 'unknown' as const,
         })),
       };
     });
     set({ channels: updated });
   },
 
+  // ── Channels CRUD ───────────────────────────────────────────────────────────
   addChannel: (channel) => {
     const newCh: Channel = {
       ...channel,
-      id:      uuidv4(),
+      id     : uuidv4(),
       isTamil: isTamilChannel(channel as Channel),
     };
     set(s => ({ channels: [...s.channels, newCh] }));
@@ -319,6 +299,7 @@ export const useStore = create<AppState>((set, get) => ({
     get().syncDB();
   },
 
+  // ── Groups CRUD ─────────────────────────────────────────────────────────────
   addGroup: (group) => {
     const newGroup: Group = { ...group, id: uuidv4() };
     set(s => ({ groups: [...s.groups, newGroup] }));
@@ -358,20 +339,21 @@ export const useStore = create<AppState>((set, get) => ({
     get().syncDB();
   },
 
+  // ── Auto-sync groups from channel data ─────────────────────────────────────
   syncGroups: () => {
     const { channels, groups } = get();
-    const groupNames   = [...new Set(channels.map(ch => ss(ch.group) || 'Uncategorized'))];
+    const groupNames    = [...new Set(channels.map(ch => ss(ch.group) || 'Uncategorized'))];
     const existingNames = new Set(groups.map(g => g.name));
     const newGroups: Group[] = [];
     groupNames.forEach(name => {
       if (!existingNames.has(name)) {
         const gc = channels.filter(ch => ss(ch.group) === name);
         newGroups.push({
-          id:      uuidv4(),
+          id      : uuidv4(),
           name,
           isActive: true,
-          order:   groups.length + newGroups.length,
-          isTamil:
+          order   : groups.length + newGroups.length,
+          isTamil :
             gc.some(ch => ch.isTamil) ||
             name.toLowerCase().includes('tamil'),
         });
@@ -390,19 +372,20 @@ export const useStore = create<AppState>((set, get) => ({
     }));
   },
 
+  // ── Playlists ───────────────────────────────────────────────────────────────
   createPlaylist: (name, includeGroups, tamilOnly = false) => {
-    const id = uuidv4();
+    const id       = uuidv4();
     const playlist: PlaylistConfig = {
       id,
       name,
-      generatedUrl:  `${PLAYLIST_BASE}/${id}.m3u`,
+      generatedUrl   : `${PLAYLIST_BASE}/${id}.m3u`,
       includeGroups,
-      excludeGroups: [],
+      excludeGroups  : [],
       tamilOnly,
-      pinnedChannels:  [],
+      pinnedChannels : [],
       blockedChannels: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt      : new Date().toISOString(),
+      updatedAt      : new Date().toISOString(),
     };
     set(s => ({ playlists: [...s.playlists, playlist] }));
     get().syncDB();
@@ -412,9 +395,7 @@ export const useStore = create<AppState>((set, get) => ({
   updatePlaylist: (id, updates) => {
     set(s => ({
       playlists: s.playlists.map(p =>
-        p.id === id
-          ? { ...p, ...updates, updatedAt: new Date().toISOString() }
-          : p
+        p.id === id ? { ...p, ...updates, updatedAt: new Date().toISOString() } : p
       ),
     }));
     get().syncDB();
@@ -449,9 +430,10 @@ export const useStore = create<AppState>((set, get) => ({
     return generateM3U(filtered, BASE_URL);
   },
 
+  // ── Filtered channel view ───────────────────────────────────────────────────
   getFilteredChannels: () => {
     const { channels, groups, selectedGroup, showTamilOnly, searchQuery } = get();
-    const s = (v: unknown) =>
+    const sv = (v: unknown) =>
       (typeof v === 'string' ? v : String(v ?? '')).toLowerCase();
     let filtered = [...channels];
     if (selectedGroup) filtered = filtered.filter(ch => ch.group === selectedGroup);
@@ -459,11 +441,11 @@ export const useStore = create<AppState>((set, get) => ({
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       filtered = filtered.filter(ch =>
-        s(ch.name).includes(q)    ||
-        s(ch.group).includes(q)   ||
-        s(ch.tvgId).includes(q)   ||
-        s(ch.language).includes(q)||
-        s(ch.tvgName).includes(q)
+        sv(ch.name).includes(q)     ||
+        sv(ch.group).includes(q)    ||
+        sv(ch.tvgId).includes(q)    ||
+        sv(ch.language).includes(q) ||
+        sv(ch.tvgName).includes(q)
       );
     }
     const activeGroupNames = new Set(groups.filter(g => g.isActive).map(g => g.name));
@@ -473,6 +455,7 @@ export const useStore = create<AppState>((set, get) => ({
     return filtered.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   },
 
+  // ── DB export & sync ────────────────────────────────────────────────────────
   exportDB: () => {
     const { channels, playlists, sources, groups } = get();
     return JSON.stringify({ channels, playlists, sources, groups }, null, 2);
@@ -485,71 +468,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   syncToServer: async () => {
     const { channels, playlists, sources, groups, serverUrl } = get();
-    const url = serverUrl || BASE_URL;
+    const url  = serverUrl || BASE_URL;
     const resp = await fetch(`${url}/api/sync`, {
-      method: 'POST',
+      method : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channels, playlists, sources, groups }),
+      body   : JSON.stringify({ channels, playlists, sources, groups }),
     });
     if (!resp.ok) throw new Error(`Server returned ${resp.status}: ${resp.statusText}`);
-  },
-
-  getBestLink: async (channelName: string) => {
-    const { serverUrl } = get();
-    const base = serverUrl || BASE_URL;
-    try {
-      const resp = await fetch(
-        `${base}/api/bestlink/${encodeURIComponent(channelName)}`,
-        { signal: AbortSignal.timeout(15000) }
-      );
-      if (!resp.ok) return null;
-      return (await resp.json()) as BestLinkResult;
-    } catch {
-      return null;
-    }
-  },
-
-  checkCombinedLinks: async (channelName: string) => {
-    const { channels, sources, serverUrl } = get();
-    const base    = serverUrl || BASE_URL;
-    const key     = normName(channelName);
-    const matching = channels.filter(ch => normName(ch.name) === key);
-    if (matching.length === 0) return [];
-    try {
-      const resp = await fetch(`${base}/api/health/batch`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ ids: matching.map(ch => ch.id) }),
-        signal:  AbortSignal.timeout(20000),
-      });
-      const data = resp.ok ? await resp.json() : { results: {} };
-      const links: CombinedLink[] = matching.map(ch => {
-        const result = data.results?.[ch.id];
-        return {
-          channelId:  ch.id,
-          sourceId:   ch.sourceId,
-          sourceName: sources.find(s => s.id === ch.sourceId)?.name || ch.sourceId,
-          url:        ch.url,
-          latency:    result?.latency ?? 9999,
-          status:     result?.ok ? 'live' : 'dead',
-        };
-      });
-      set(s => ({
-        channels: s.channels.map(ch => {
-          const r = data.results?.[ch.id];
-          if (!r) return ch;
-          return { ...ch, healthStatus: r.ok ? 'ok' : 'error', healthLatency: r.latency };
-        }),
-      }));
-      return links.sort((a, b) => (a.latency ?? 9999) - (b.latency ?? 9999));
-    } catch {
-      return matching.map(ch => ({
-        channelId:  ch.id,
-        sourceId:   ch.sourceId,
-        sourceName: sources.find(s => s.id === ch.sourceId)?.name || ch.sourceId,
-        url:        ch.url,
-        status:     'unknown' as const,
-      }));
-    }
   },
 }));

@@ -3,18 +3,16 @@ import { useStore } from '../store/useStore';
 import { PlaylistConfig } from '../types';
 import {
   Plus, Trash2, Edit2, Save, X, Copy, Check,
-  List, Download, Globe, Star, Eye, Heart,
+  List, Download, Globe, Star, Eye, Heart, Zap, Info,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-// ── Form state ────────────────────────────────────────────────────────────────
 interface FormState {
   name: string;
   tamilOnly: boolean;
   includeGroups: string[];
 }
 
-// ── Copy button with feedback ─────────────────────────────────────────────────
 function CopyBtn({ text, label = 'Copied!' }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -31,6 +29,135 @@ function CopyBtn({ text, label = 'Copied!' }: { text: string; label?: string }) 
   );
 }
 
+// ── Default Playlist Card ─────────────────────────────────────────────────────
+function DefaultPlaylistCard() {
+  const { playlists, channels, serverUrl } = useStore();
+  const base = serverUrl || window.location.origin;
+  const defaultUrl = `${base}/api/playlist/default.m3u`;
+  const allUrl     = `${base}/api/playlist/all.m3u`;
+  const tamilUrl   = `${base}/api/playlist/tamil.m3u`;
+
+  const tamilPlaylists = playlists.filter(p => p.tamilOnly);
+  const normalPlaylists = playlists.filter(p => !p.tamilOnly);
+  const tamilCount = channels.filter(c => c.isTamil).length;
+
+  // Estimate what default playlist contains
+  const defaultDesc = playlists.length === 0
+    ? `All ${channels.length} channels`
+    : `Combines ${playlists.length} playlist${playlists.length > 1 ? 's' : ''} — ${tamilPlaylists.length} Tamil-only + ${normalPlaylists.length} all-channels`;
+
+  return (
+    <div className="bg-gradient-to-br from-purple-900/30 to-blue-900/20 border border-purple-500/40 rounded-xl p-5 space-y-4">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-purple-600/30 border border-purple-500/50 flex items-center justify-center shrink-0">
+            <Zap className="w-5 h-5 text-purple-400" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-white font-bold">Default Playlist</h3>
+              <span className="text-xs bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full">
+                Auto-generated
+              </span>
+            </div>
+            <p className="text-gray-400 text-xs mt-0.5">{defaultDesc}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Info box */}
+      <div className="flex items-start gap-2 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg text-xs text-blue-300">
+        <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+        <div>
+          <p className="font-medium mb-1">How Default Playlist works:</p>
+          <ul className="space-y-0.5 text-blue-200/80 list-disc list-inside">
+            <li>Combines channels from ALL created playlists</li>
+            <li>Tamil-only playlists → only their Tamil channels</li>
+            <li>Normal playlists → all channels from their groups</li>
+            <li>No playlists created → serves all {channels.length} channels</li>
+            <li>Deduplicates — each channel appears once</li>
+          </ul>
+        </div>
+      </div>
+
+      {/* Playlist composition */}
+      {playlists.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Composition</p>
+          {playlists.map(p => {
+            const cnt = channels.filter(ch => {
+              if (!ch.isActive) return false;
+              if (p.tamilOnly && !ch.isTamil) return false;
+              if (p.includeGroups.length && !p.includeGroups.includes(ch.group)) return false;
+              return true;
+            }).length;
+            return (
+              <div key={p.id} className="flex items-center justify-between text-xs px-3 py-1.5 bg-gray-800/60 rounded-lg border border-gray-700/50">
+                <div className="flex items-center gap-2">
+                  {p.tamilOnly
+                    ? <Heart className="w-3 h-3 text-orange-400 fill-orange-400" />
+                    : <List className="w-3 h-3 text-blue-400" />}
+                  <span className="text-gray-300">{p.name}</span>
+                  {p.tamilOnly && <span className="text-orange-400/70">Tamil only</span>}
+                </div>
+                <span className="text-gray-500">{cnt} channels</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* URLs */}
+      <div className="space-y-2">
+        {/* Default */}
+        <div className="bg-gray-900 border border-purple-500/30 rounded-lg p-3">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5 text-purple-400" />
+              <span className="text-xs text-purple-300 font-medium">Default Playlist URL</span>
+            </div>
+            <CopyBtn text={defaultUrl} label="📋 Default URL copied!" />
+          </div>
+          <p className="text-purple-300 text-xs font-mono truncate">{defaultUrl}</p>
+        </div>
+
+        {/* All channels */}
+        <div className="grid grid-cols-2 gap-2">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg p-2.5">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs text-gray-400">All Channels</span>
+              <CopyBtn text={allUrl} label="All channels URL copied!" />
+            </div>
+            <p className="text-gray-300 text-xs font-mono truncate">/api/playlist/all.m3u</p>
+          </div>
+          {tamilCount > 0 && (
+            <div className="bg-gray-900 border border-orange-500/20 rounded-lg p-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-orange-400">Tamil Only</span>
+                <CopyBtn text={tamilUrl} label="Tamil URL copied!" />
+              </div>
+              <p className="text-orange-300 text-xs font-mono truncate">/api/playlist/tamil.m3u</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-2 flex-wrap">
+        <button onClick={() => { navigator.clipboard.writeText(defaultUrl); toast.success('Default URL copied!'); }}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-400 rounded-lg text-xs font-medium transition-colors">
+          <Copy className="w-3.5 h-3.5" /> Copy Default URL
+        </button>
+        <a href={defaultUrl} target="_blank" rel="noopener noreferrer"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 rounded-lg text-xs font-medium transition-colors">
+          <Eye className="w-3.5 h-3.5" /> Preview
+        </a>
+      </div>
+    </div>
+  );
+}
+
 // ── Playlist card ─────────────────────────────────────────────────────────────
 function PlaylistCard({
   playlist,
@@ -42,7 +169,7 @@ function PlaylistCard({
   onDelete: (id: string) => void;
 }) {
   const { getPlaylistM3U, channels, serverUrl } = useStore();
-  const base   = serverUrl || window.location.origin;
+  const base    = serverUrl || window.location.origin;
   const liveUrl = `${base}/api/playlist/${playlist.id}.m3u`;
 
   const includedChannels = channels.filter(ch => {
@@ -69,8 +196,8 @@ function PlaylistCard({
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center shrink-0">
-            <List className="w-5 h-5 text-purple-400" />
+          <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center shrink-0">
+            <List className="w-5 h-5 text-blue-400" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
@@ -84,7 +211,6 @@ function PlaylistCard({
             <p className="text-gray-500 text-xs mt-0.5">
               {includedChannels.length.toLocaleString()} channels
               {playlist.includeGroups.length > 0 && ` · ${playlist.includeGroups.length} groups`}
-              {playlist.tamilOnly && ' · 🎬 Tamil filter ON'}
             </p>
           </div>
         </div>
@@ -133,11 +259,11 @@ function PlaylistCard({
           <Download className="w-3.5 h-3.5" /> Download M3U
         </button>
         <button onClick={() => { navigator.clipboard.writeText(liveUrl); toast.success('URL copied!'); }}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-400 rounded-lg text-xs font-medium transition-colors">
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 rounded-lg text-xs font-medium transition-colors">
           <Copy className="w-3.5 h-3.5" /> Copy URL
         </button>
         <a href={liveUrl} target="_blank" rel="noopener noreferrer"
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 rounded-lg text-xs font-medium transition-colors">
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600/20 hover:bg-green-600/30 border border-green-500/30 text-green-400 rounded-lg text-xs font-medium transition-colors">
           <Eye className="w-3.5 h-3.5" /> Preview
         </a>
       </div>
@@ -210,7 +336,7 @@ function PlaylistForm({
             <Heart className={`w-4 h-4 ${form.tamilOnly ? 'text-orange-400 fill-orange-400' : 'text-gray-500'}`} />
             <div>
               <p className="text-sm text-white font-medium">Tamil Only Filter</p>
-              <p className="text-xs text-gray-400">Only include Tamil-tagged channels</p>
+              <p className="text-xs text-gray-400">Only Tamil-tagged channels in this playlist</p>
             </div>
           </div>
           <button
@@ -235,16 +361,12 @@ function PlaylistForm({
             <div className="flex gap-2">
               <button onClick={selectTamilGroups}
                 className="text-xs text-orange-400 hover:text-orange-300 transition-colors flex items-center gap-1">
-                <Star className="w-3 h-3" /> Select Tamil
+                <Star className="w-3 h-3" /> Tamil Groups
               </button>
               <button onClick={() => setForm(f => ({ ...f, includeGroups: groups.map(g => g.name) }))}
-                className="text-xs text-blue-400 hover:text-blue-300 transition-colors">
-                All
-              </button>
+                className="text-xs text-blue-400 hover:text-blue-300 transition-colors">All</button>
               <button onClick={() => setForm(f => ({ ...f, includeGroups: [] }))}
-                className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
-                None
-              </button>
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors">None</button>
             </div>
           </div>
 
@@ -256,7 +378,9 @@ function PlaylistForm({
           />
 
           <p className="text-xs text-gray-500">
-            {form.includeGroups.length === 0 ? 'No groups selected = all channels included' : `${form.includeGroups.length} groups selected`}
+            {form.includeGroups.length === 0
+              ? 'No groups selected = all channels included'
+              : `${form.includeGroups.length} groups selected`}
           </p>
 
           <div className="overflow-y-auto flex-1 max-h-48 space-y-1 pr-1">
@@ -272,7 +396,7 @@ function PlaylistForm({
                       : 'bg-gray-900 border border-gray-800 text-gray-400 hover:text-white hover:bg-gray-800'
                   }`}
                 >
-                  <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                  <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
                     selected ? 'bg-blue-600 border-blue-500' : 'border-gray-600'
                   }`}>
                     {selected && <Check className="w-2.5 h-2.5 text-white" />}
@@ -340,7 +464,7 @@ export default function PlaylistsTab() {
 
   return (
     <div className="space-y-5">
-      {/* Form modals */}
+      {/* Modals */}
       {showForm && (
         <PlaylistForm onSave={handleCreate} onClose={() => setShowForm(false)} />
       )}
@@ -357,7 +481,7 @@ export default function PlaylistsTab() {
         <div>
           <h2 className="text-xl font-bold text-white">Playlists</h2>
           <p className="text-gray-500 text-sm mt-0.5">
-            {playlists.length} playlists · {channels.length.toLocaleString()} total channels
+            {playlists.length} playlist{playlists.length !== 1 ? 's' : ''} · {channels.length.toLocaleString()} total channels
             {tamilCount > 0 && <span className="text-orange-400"> · {tamilCount} Tamil</span>}
           </p>
         </div>
@@ -369,12 +493,18 @@ export default function PlaylistsTab() {
         </button>
       </div>
 
-      {/* Empty state */}
+      {/* Default playlist — always shown at top */}
+      <DefaultPlaylistCard />
+
+      {/* User playlists */}
       {playlists.length === 0 ? (
-        <div className="text-center py-20 text-gray-500">
+        <div className="text-center py-16 text-gray-500">
           <List className="w-14 h-14 mx-auto mb-4 opacity-20" />
-          <p className="text-lg font-medium text-gray-400 mb-2">No playlists yet</p>
-          <p className="text-sm mb-6">Create a playlist to get a shareable M3U URL</p>
+          <p className="text-lg font-medium text-gray-400 mb-2">No custom playlists yet</p>
+          <p className="text-sm mb-6">
+            Create playlists to filter channels by group or Tamil content.
+            <br />The <strong className="text-purple-400">Default Playlist</strong> above auto-combines all your playlists.
+          </p>
           <button
             onClick={() => setShowForm(true)}
             className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors"

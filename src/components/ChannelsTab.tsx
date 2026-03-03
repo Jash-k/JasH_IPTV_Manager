@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useStore } from '../store/useStore';
-import { Channel, CombinedLink } from '../types';
+import { Channel } from '../types';
 import {
   Search, Trash2, Edit2, Save, X, ChevronDown, ChevronUp,
-  Heart, Wifi, WifiOff, Loader, Activity, Zap,
+  Heart, Wifi, WifiOff, Loader, Activity,
   Copy, Check, GitMerge, Globe, Plus, CheckSquare,
   Square, MoveRight, Filter, RefreshCw,
 } from 'lucide-react';
@@ -65,28 +65,20 @@ function RouteBadge({ ch }: { ch: Channel }) {
   );
 }
 
-// ── Multi-source panel ────────────────────────────────────────────────────────
+// ── Multi-source panel — shows all source links, each has its own 302 redirect
 function MultiSourcePanel({ ch, onClose }: { ch: Channel; onClose: () => void }) {
-  const { checkCombinedLinks, getBestLink, serverUrl } = useStore();
+  const { sources, serverUrl } = useStore();
   const base = serverUrl || window.location.origin;
-  const [links, setLinks] = useState<CombinedLink[]>([]);
-  const [checking, setChecking] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
 
-  const check = async () => {
-    setChecking(true);
-    setLinks(await checkCombinedLinks(ch.name));
-    setChecking(false);
-  };
+  const links = ch.combinedLinks || [];
 
   const copyLink = (key: string, url: string) => {
     navigator.clipboard.writeText(url);
-    setCopied(key); setTimeout(() => setCopied(null), 2000);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 2000);
     toast.success('URL copied!');
   };
-
-  const bestUrl = `${base}/redirect/best/${encodeURIComponent(ch.name)}`;
-  const displayLinks = links.length > 0 ? links : (ch.combinedLinks || []);
 
   return (
     <div className="mt-2 mx-3 mb-3 bg-gray-900 border border-blue-500/30 rounded-xl p-4 space-y-3">
@@ -95,58 +87,41 @@ function MultiSourcePanel({ ch, onClose }: { ch: Channel; onClose: () => void })
           <GitMerge className="w-4 h-4 text-blue-400" />
           <span className="text-white font-medium text-sm">Multi-Source — {ch.name}</span>
           <span className="text-xs bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full">
-            {displayLinks.length} sources
+            {links.length} sources
           </span>
         </div>
         <button onClick={onClose} className="text-gray-500 hover:text-white"><X className="w-4 h-4" /></button>
       </div>
 
-      <div className="bg-gray-800 rounded-lg p-3 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs text-gray-400 mb-1">⚡ Smart URL — races all, redirects to fastest live</p>
-          <p className="text-blue-400 text-xs font-mono truncate">{bestUrl}</p>
-        </div>
-        <button onClick={async () => {
-          await getBestLink(ch.name);
-          navigator.clipboard.writeText(bestUrl);
-          toast.success('⚡ Best-link copied!');
-        }}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium whitespace-nowrap">
-          <Zap className="w-3 h-3" /> Copy Best Link
-        </button>
-      </div>
-
-      <button onClick={check} disabled={checking}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600/20 border border-green-600/30 text-green-400 hover:bg-green-600/30 rounded-lg text-xs font-medium disabled:opacity-50">
-        {checking ? <Loader className="w-3 h-3 animate-spin" /> : <Activity className="w-3 h-3" />}
-        {checking ? 'Checking...' : 'Check All Links'}
-      </button>
+      <p className="text-xs text-gray-400">
+        Each source has its own 302 redirect URL. All redirect directly to their original stream.
+      </p>
 
       <div className="space-y-2">
-        {displayLinks.map((link, i) => (
-          <div key={link.channelId + i}
-            className={`flex items-center gap-3 p-2.5 rounded-lg border ${link.status === 'live'
-              ? 'bg-green-500/5 border-green-500/20' : link.status === 'dead'
-                ? 'bg-red-500/5 border-red-500/20' : 'bg-gray-800 border-gray-700'}`}>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-white text-xs font-medium">{link.sourceName || link.sourceId}</span>
-                {link.status === 'live' && (
-                  <span className="flex items-center gap-1 text-xs text-green-400">
-                    <Wifi className="w-3 h-3" /> Live {link.latency ? `${link.latency}ms` : ''}
+        {links.map((link, i) => {
+          const src = sources.find(s => s.id === link.sourceId);
+          const redirectUrl = `${base}/redirect/${link.channelId}`;
+          return (
+            <div key={link.channelId + i}
+              className="flex items-center gap-3 p-2.5 rounded-lg border bg-gray-800 border-gray-700">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-white text-xs font-medium">{src?.name || link.sourceName || link.sourceId}</span>
+                  <span className="text-xs bg-green-500/10 text-green-400 border border-green-500/20 px-1.5 py-0.5 rounded-full">
+                    302 redirect
                   </span>
-                )}
-                {link.status === 'dead' && <span className="text-xs text-red-400 flex items-center gap-1"><WifiOff className="w-3 h-3" /> Dead</span>}
-                {(!link.status || link.status === 'unknown') && <span className="text-xs text-gray-500">Unchecked</span>}
+                </div>
+                <p className="text-gray-500 text-xs font-mono truncate mt-0.5">{redirectUrl}</p>
               </div>
-              <p className="text-gray-500 text-xs font-mono truncate mt-0.5">{link.url}</p>
+              <button onClick={() => copyLink(link.channelId, redirectUrl)}
+                className="p-1.5 text-gray-400 hover:text-blue-400 rounded">
+                {copied === link.channelId
+                  ? <Check className="w-3.5 h-3.5 text-green-400" />
+                  : <Copy className="w-3.5 h-3.5" />}
+              </button>
             </div>
-            <button onClick={() => copyLink(link.channelId, link.url)}
-              className="p-1.5 text-gray-400 hover:text-blue-400 rounded">
-              {copied === link.channelId ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
