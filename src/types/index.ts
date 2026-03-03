@@ -8,42 +8,31 @@ export interface Channel {
   tvgName?: string;
   language?: string;
   country?: string;
-  isDrm?: boolean;
-  drmKeyId?: string;
-  drmKey?: string;
-  keyId?: string;
-  key?: string;
   isActive: boolean;
   enabled?: boolean;
   order: number;
   sourceId: string;
   tags?: string[];
   streamType?: 'hls' | 'dash' | 'direct';
-  licenseType?: string;
-  licenseKey?: string;
-  licenseUrl?: string;
   userAgent?: string;
   referer?: string;
   cookie?: string;
   httpHeaders?: Record<string, string>;
   isTamil?: boolean;
-  status?: string;
   healthStatus?: 'ok' | 'error' | 'checking' | 'unknown';
-  lastHealthCheck?: string;
   healthLatency?: number;
-  // Multi-source best-link
+  lastHealthCheck?: string;
   multiSource?: boolean;
   combinedLinks?: CombinedLink[];
 }
 
 export interface CombinedLink {
   channelId: string;
-  sourceId:  string;
+  sourceId: string;
   sourceName?: string;
-  url:       string;
-  isDrm?:    boolean;
-  latency?:  number;
-  status?:   'live' | 'dead' | 'unknown' | 'checking';
+  url: string;
+  latency?: number;
+  status?: 'live' | 'dead' | 'unknown' | 'checking';
 }
 
 export interface Group {
@@ -89,17 +78,5 @@ export interface PlaylistConfig {
   updatedAt: string;
 }
 
-export interface DrmProxy {
-  id: string;
-  channelId: string;
-  channelName?: string;
-  keyId: string;
-  key: string;
-  licenseUrl?: string;
-  licenseType?: string;
-  proxyUrl: string;
-  isActive: boolean;
-  notes?: string;
-}
-
-export type TabType = 'sources' | 'channels' | 'groups' | 'playlists' | 'editor' | 'drm' | 'server';
+// TabType — NO drm tab
+export type TabType = 'sources' | 'channels' | 'groups' | 'playlists' | 'editor' | 'server';

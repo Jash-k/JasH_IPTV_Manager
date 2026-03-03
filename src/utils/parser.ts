@@ -21,8 +21,8 @@ export function parseAny(content: string, sourceId: string): Channel[] {
   return [];
 }
 
-// ── DRM check ─────────────────────────────────────────────────────────────────
-export function isDRMChannel(ch: Channel): boolean {
+// ── DRM check — uses raw object fields (before stripping) ────────────────────
+export function isDRMChannel(ch: Record<string, unknown>): boolean {
   return !!(ch.licenseType || ch.licenseKey || ch.drmKey || ch.drmKeyId || ch.isDrm);
 }
 
@@ -41,7 +41,6 @@ export function generateM3U(channels: Channel[], baseUrl: string): string {
   const active = channels
     .filter(c => {
       if (c.enabled === false || c.isActive === false) return false;
-      if (isDRMChannel(c)) return false;
       return true;
     })
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));

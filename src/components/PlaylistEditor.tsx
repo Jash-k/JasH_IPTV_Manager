@@ -5,7 +5,7 @@ import {
   Search, X, Plus, Minus, Star,
   GripVertical, Copy, Check, Download,
   Filter, ChevronUp, ChevronDown, RefreshCw,
-  Shield, Tv2, List, Save, ArrowLeft, ArrowRight,
+  Tv2, List, Save, ArrowLeft, ArrowRight,
   Eye, EyeOff, ChevronRight,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -78,7 +78,6 @@ function ChannelRow({
       {/* Badges */}
       <div className="flex items-center gap-0.5 shrink-0">
         {ch.isTamil && <span className="text-[9px] bg-orange-500/20 text-orange-400 px-1 py-0.5 rounded font-bold border border-orange-500/20">TM</span>}
-        {ch.isDrm   && <Shield className="w-2.5 h-2.5 text-purple-400" />}
         {isPinned   && <span className="text-[9px] bg-green-500/20 text-green-400 px-1 py-0.5 rounded font-bold border border-green-500/20">PIN</span>}
         {isBlocked  && <span className="text-[9px] bg-red-500/20 text-red-400 px-1 py-0.5 rounded font-bold border border-red-500/20">BLK</span>}
       </div>
@@ -128,7 +127,7 @@ export default function PlaylistEditor() {
   const [rightSearch,   setRightSearch]   = useState('');
   const [leftGroup,     setLeftGroup]     = useState('__all__');
   const [leftTamilOnly, setLeftTamilOnly] = useState(false);
-  const [leftDrmOnly,   setLeftDrmOnly]   = useState(false);
+  const [leftDrmOnly,   _setLeftDrmOnly]  = useState(false);
   const [sortMode,      setSortMode]      = useState<'order' | 'name' | 'group'>('order');
   const [dragId,        setDragId]        = useState<string | null>(null);
   const [dragOverId,    setDragOverId]    = useState<string | null>(null);
@@ -164,7 +163,7 @@ export default function PlaylistEditor() {
   const leftFiltered = useMemo(() => {
     let list = [...available];
     if (leftTamilOnly) list = list.filter(c => c.isTamil);
-    if (leftDrmOnly)   list = list.filter(c => c.isDrm);
+    if (leftDrmOnly)   list = list.filter(_c => false); // DRM channels are stripped at import
     if (leftGroup !== '__all__') list = list.filter(c => c.group === leftGroup);
     if (leftSearch) {
       const q = leftSearch.toLowerCase();
@@ -501,12 +500,7 @@ export default function PlaylistEditor() {
                 <Star className={`w-3 h-3 ${leftTamilOnly ? 'fill-white' : 'fill-orange-400'}`} />
                 TM {tamilLeft > 0 && `(${tamilLeft})`}
               </button>
-              <button onClick={() => setLeftDrmOnly(v => !v)}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all ${
-                  leftDrmOnly ? 'bg-purple-600 border-purple-500 text-white' : 'bg-purple-500/10 border-purple-500/20 text-purple-400 hover:bg-purple-500/20'
-                }`}>
-                <Shield className="w-3 h-3" /> DRM
-              </button>
+              {/* DRM filter removed — DRM channels are stripped at import */}
             </div>
           </div>
 
@@ -645,7 +639,7 @@ export default function PlaylistEditor() {
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded bg-green-950 border border-green-800" /> Pinned — always in playlist</span>
         <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded bg-red-950 border border-red-900" /> Blocked — never in playlist</span>
         <span className="flex items-center gap-1.5"><span className="text-[9px] bg-orange-500/20 text-orange-400 px-1 rounded font-bold border border-orange-500/20">TM</span> Tamil</span>
-        <span className="flex items-center gap-1.5"><Shield className="w-2.5 h-2.5 text-purple-400" /> DRM protected</span>
+        <span className="flex items-center gap-1.5 text-purple-400">🔐 DRM streams auto-removed at import</span>
         <span className="flex items-center gap-1.5 ml-auto text-gray-700"><Save className="w-3 h-3" /> All changes auto-saved & synced to server</span>
       </div>
     </div>

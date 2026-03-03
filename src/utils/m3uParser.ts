@@ -98,20 +98,20 @@ export function parseM3U(content: string, sourceId: string): Channel[] {
         country = extractAttribute(currentExtInf, 'tvg-country');
         currentExtInf = null;
       }
-      const ch: Channel = {
+      // Store DRM fields as unknown so the store's hasDRM() filter can detect and strip them
+      const raw: Record<string, unknown> = {
         id: `${sourceId}_${channels.length}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         name, url, logo, group, tvgId, tvgName, language, country,
         sourceId, isActive: true, enabled: true, order: channels.length,
         streamType: detectStreamType(url),
-        status: 'unknown',
-        isDrm: !!(pendingLicenseType || pendingLicenseKey),
-        ...(pendingLicenseType && { licenseType: pendingLicenseType }),
-        ...(pendingLicenseKey  && { licenseKey:  pendingLicenseKey }),
-        ...(pendingUserAgent   && { userAgent:   pendingUserAgent }),
-        ...(pendingReferer     && { referer:     pendingReferer }),
-        ...(pendingCookie      && { cookie:      pendingCookie }),
-        ...(Object.keys(pendingHeaders).length > 0 && { httpHeaders: { ...pendingHeaders } }),
       };
+      if (pendingLicenseType) { raw.licenseType = pendingLicenseType; raw.isDrm = true; }
+      if (pendingLicenseKey)  { raw.licenseKey  = pendingLicenseKey;  raw.isDrm = true; }
+      if (pendingUserAgent)   raw.userAgent  = pendingUserAgent;
+      if (pendingReferer)     raw.referer    = pendingReferer;
+      if (pendingCookie)      raw.cookie     = pendingCookie;
+      if (Object.keys(pendingHeaders).length > 0) raw.httpHeaders = { ...pendingHeaders };
+      const ch = raw as unknown as Channel;
       channels.push(ch);
       resetPending();
       currentExtInf = null;

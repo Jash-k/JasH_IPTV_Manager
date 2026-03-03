@@ -91,16 +91,17 @@ function parseOneStream(raw: RawJsonStream, sourceId: string, index: number): Ch
   const tvgName = ss(raw.tvgName) || ss(raw['tvg-name']) || name;
   const language = ss(raw.language) || undefined;
   const country = ss(raw.country) || undefined;
-  const ch: Channel = {
+  // Use a plain object so DRM fields (licenseType, licenseKey, isDrm) can be detected
+  // by the store's hasDRM() filter and stripped before storing as a clean Channel
+  const built: Record<string, unknown> = {
     id: `${sourceId}_json_${index}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     name, url, logo, group,
     tvgId, tvgName, language, country,
     sourceId, isActive: true, enabled: true, order: index,
     streamType: detectStreamType(url),
-    status: 'unknown',
     ...drm, ...headers,
   };
-  return ch;
+  return built as unknown as Channel;
 }
 
 function flattenJsonToStreams(raw: unknown): RawJsonStream[] {

@@ -5,38 +5,38 @@ import ChannelsTab from './components/ChannelsTab';
 import GroupsTab from './components/GroupsTab';
 import PlaylistsTab from './components/PlaylistsTab';
 import PlaylistEditor from './components/PlaylistEditor';
-import DrmTab from './components/DrmTab';
 import ServerTab from './components/ServerTab';
-import {
-  Tv2, Database, Layers, List, Shield, Server,
-  Menu, X, Star, Edit3,
-} from 'lucide-react';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { Tv2, Database, Layers, List, Server, Menu, X, Star, Edit3 } from 'lucide-react';
 import { useState } from 'react';
 import { TabType } from './types';
 
 const TABS: { id: TabType; label: string; icon: React.ReactNode; color: string }[] = [
-  { id: 'sources',   label: 'Sources',          icon: <Database className="w-4 h-4" />, color: 'text-blue-400'   },
-  { id: 'channels',  label: 'Channels',          icon: <Tv2      className="w-4 h-4" />, color: 'text-green-400'  },
-  { id: 'groups',    label: 'Groups',            icon: <Layers   className="w-4 h-4" />, color: 'text-yellow-400' },
-  { id: 'playlists', label: 'Playlists',         icon: <List     className="w-4 h-4" />, color: 'text-purple-400' },
-  { id: 'editor',    label: 'Playlist Editor',   icon: <Edit3    className="w-4 h-4" />, color: 'text-pink-400'   },
-  { id: 'drm',       label: 'DRM Proxy',         icon: <Shield   className="w-4 h-4" />, color: 'text-red-400'    },
-  { id: 'server',    label: 'Server',            icon: <Server   className="w-4 h-4" />, color: 'text-orange-400' },
+  { id: 'sources',   label: 'Sources',        icon: <Database className="w-4 h-4" />, color: 'text-blue-400'   },
+  { id: 'channels',  label: 'Channels',        icon: <Tv2      className="w-4 h-4" />, color: 'text-green-400'  },
+  { id: 'groups',    label: 'Groups',          icon: <Layers   className="w-4 h-4" />, color: 'text-yellow-400' },
+  { id: 'playlists', label: 'Playlists',       icon: <List     className="w-4 h-4" />, color: 'text-purple-400' },
+  { id: 'editor',    label: 'Playlist Editor', icon: <Edit3    className="w-4 h-4" />, color: 'text-pink-400'   },
+  { id: 'server',    label: 'Server',          icon: <Server   className="w-4 h-4" />, color: 'text-orange-400' },
 ];
 
 export default function App() {
   const {
     activeTab, setActiveTab,
-    channels, sources, playlists, drmProxies,
+    channels, sources, playlists,
     showTamilOnly, setShowTamilOnly,
     editingPlaylistId, setEditingPlaylistId,
   } = useStore();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const tamilCount    = channels.filter(c => c.isTamil).length;
-  const activeChannels = channels.filter(c => c.isActive).length;
-  const editingPlaylist = playlists.find(p => p.id === editingPlaylistId);
+  const safeChannels  = Array.isArray(channels)  ? channels  : [];
+  const safeSources   = Array.isArray(sources)   ? sources   : [];
+  const safePlaylists = Array.isArray(playlists) ? playlists : [];
+
+  const tamilCount     = safeChannels.filter(c => c.isTamil).length;
+  const activeChannels = safeChannels.filter(c => c.isActive).length;
+  const editingPlaylist = safePlaylists.find(p => p.id === editingPlaylistId);
 
   const openEditor = (playlistId: string) => {
     setEditingPlaylistId(playlistId);
@@ -51,10 +51,12 @@ export default function App() {
       case 'groups':    return <GroupsTab />;
       case 'playlists': return <PlaylistsTab onEditPlaylist={openEditor} />;
       case 'editor':    return <PlaylistEditor />;
-      case 'drm':       return <DrmTab />;
       case 'server':    return <ServerTab />;
+      default:          return <SourcesTab />;
     }
   };
+
+  const currentTab = TABS.find(t => t.id === activeTab);
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col">
@@ -70,8 +72,10 @@ export default function App() {
       {/* ── Top Header ─────────────────────────────────────────────────── */}
       <header className="border-b border-gray-800 bg-gray-900 px-4 py-3 flex items-center justify-between shrink-0 z-50">
         <div className="flex items-center gap-3">
-          <button onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="md:hidden p-1.5 text-gray-400 hover:text-white transition-colors">
+          <button
+            onClick={() => setSidebarOpen(o => !o)}
+            className="md:hidden p-1.5 text-gray-400 hover:text-white transition-colors"
+          >
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
           <div className="flex items-center gap-2.5">
@@ -80,33 +84,30 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-white font-bold text-sm leading-none">IPTV Manager</h1>
-              <p className="text-gray-500 text-xs leading-none mt-0.5">Pro · Proxy · DRM · Tamil</p>
+              <p className="text-gray-500 text-xs leading-none mt-0.5">
+                302 Redirect · Tamil Filter · Multi-Source
+              </p>
             </div>
           </div>
         </div>
 
-        {/* Quick Stats + Tamil Filter */}
+        {/* Quick stats + Tamil toggle */}
         <div className="flex items-center gap-3">
           <div className="hidden sm:flex items-center gap-4 text-xs">
-            <span className="text-gray-400 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" />
-              {sources.length} src
+            <span className="text-gray-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block mr-1" />
+              {safeSources.length} src
             </span>
-            <span className="text-gray-400 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
+            <span className="text-gray-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block mr-1" />
               {activeChannels.toLocaleString()} ch
             </span>
-            <span className="text-gray-400 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 inline-block" />
-              {playlists.length} pl
-            </span>
-            <span className="text-gray-400 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-red-400 inline-block" />
-              {drmProxies.length} drm
+            <span className="text-gray-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 inline-block mr-1" />
+              {safePlaylists.length} pl
             </span>
           </div>
 
-          {/* Global Tamil Toggle */}
           {tamilCount > 0 && (
             <button
               onClick={() => {
@@ -121,7 +122,9 @@ export default function App() {
             >
               <Star className={`w-3.5 h-3.5 ${showTamilOnly ? 'fill-white' : ''}`} />
               Tamil
-              <span className={`text-xs px-1 py-0.5 rounded font-bold ${showTamilOnly ? 'bg-orange-400 text-orange-900' : 'bg-gray-700 text-gray-400'}`}>
+              <span className={`text-xs px-1 py-0.5 rounded font-bold ${
+                showTamilOnly ? 'bg-orange-400 text-orange-900' : 'bg-gray-700 text-gray-400'
+              }`}>
                 {tamilCount}
               </span>
             </button>
@@ -135,7 +138,7 @@ export default function App() {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* ── Sidebar ────────────────────────────────────────────────────── */}
+        {/* ── Sidebar ──────────────────────────────────────────────────── */}
         <aside className={`
           fixed inset-y-0 left-0 z-40 w-56 bg-gray-900 border-r border-gray-800 pt-16
           flex flex-col transition-transform duration-200
@@ -143,11 +146,13 @@ export default function App() {
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         `}>
           <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-            <p className="text-gray-600 text-xs font-semibold uppercase tracking-wider px-3 mb-3 mt-2">Navigation</p>
+            <p className="text-gray-600 text-xs font-semibold uppercase tracking-wider px-3 mb-3 mt-2">
+              Navigation
+            </p>
             {TABS.map(tab => (
-              <button key={tab.id}
+              <button
+                key={tab.id}
                 onClick={() => {
-                  // If clicking editor tab but no playlist selected, go to playlists first
                   if (tab.id === 'editor' && !editingPlaylistId) {
                     setActiveTab('playlists');
                   } else {
@@ -164,23 +169,39 @@ export default function App() {
                 <span className={activeTab === tab.id ? tab.color : ''}>{tab.icon}</span>
                 <span className="flex-1 text-left">{tab.label}</span>
 
-                {/* Badge counters */}
-                {tab.id === 'channels'  && channels.length  > 0 && <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">{channels.length}</span>}
-                {tab.id === 'sources'   && sources.length   > 0 && <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">{sources.length}</span>}
-                {tab.id === 'playlists' && playlists.length > 0 && <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">{playlists.length}</span>}
-                {tab.id === 'drm'       && drmProxies.length > 0 && <span className="text-xs bg-purple-900/60 text-purple-400 px-1.5 py-0.5 rounded-full">{drmProxies.length}</span>}
-                {tab.id === 'editor'    && editingPlaylist && (
-                  <span className="text-xs bg-pink-900/60 text-pink-400 px-1.5 py-0.5 rounded-full max-w-[60px] truncate">{editingPlaylist.name}</span>
+                {tab.id === 'channels' && safeChannels.length > 0 && (
+                  <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">
+                    {safeChannels.length}
+                  </span>
+                )}
+                {tab.id === 'sources' && safeSources.length > 0 && (
+                  <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">
+                    {safeSources.length}
+                  </span>
+                )}
+                {tab.id === 'playlists' && safePlaylists.length > 0 && (
+                  <span className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">
+                    {safePlaylists.length}
+                  </span>
+                )}
+                {tab.id === 'editor' && editingPlaylist && (
+                  <span className="text-xs bg-pink-900/60 text-pink-400 px-1.5 py-0.5 rounded-full max-w-[60px] truncate">
+                    {editingPlaylist.name}
+                  </span>
                 )}
               </button>
             ))}
           </nav>
 
-          {/* Tamil Quick Filter in Sidebar */}
+          {/* Tamil quick filter */}
           {tamilCount > 0 && (
             <div className="px-3 pb-2">
               <button
-                onClick={() => { setShowTamilOnly(!showTamilOnly); setActiveTab('channels'); setSidebarOpen(false); }}
+                onClick={() => {
+                  setShowTamilOnly(!showTamilOnly);
+                  setActiveTab('channels');
+                  setSidebarOpen(false);
+                }}
                 className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold transition-all ${
                   showTamilOnly
                     ? 'bg-orange-500 text-white'
@@ -188,49 +209,51 @@ export default function App() {
                 }`}
               >
                 <Star className={`w-4 h-4 ${showTamilOnly ? 'fill-white' : 'fill-orange-400'}`} />
-                🎬 Tamil Channels
-                <span className={`ml-auto text-xs px-1.5 py-0.5 rounded-full font-bold ${showTamilOnly ? 'bg-orange-400 text-orange-900' : 'bg-orange-500/20 text-orange-400'}`}>
+                🎬 Tamil
+                <span className={`ml-auto text-xs px-1.5 py-0.5 rounded-full font-bold ${
+                  showTamilOnly ? 'bg-orange-400 text-orange-900' : 'bg-orange-500/20 text-orange-400'
+                }`}>
                   {tamilCount}
                 </span>
               </button>
             </div>
           )}
 
-          {/* Sidebar Footer */}
+          {/* Sidebar footer */}
           <div className="p-4 border-t border-gray-800">
             <div className="bg-gray-800 rounded-lg p-3">
-              <p className="text-xs text-gray-400 font-medium mb-1">Server Status</p>
-              <div className="flex items-center gap-2 mb-1">
+              <p className="text-xs text-gray-400 font-medium mb-1">Auto-Sync</p>
+              <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                <span className="text-green-400 text-xs">Auto-Sync Active</span>
+                <span className="text-green-400 text-xs">Active</span>
               </div>
-              <p className="text-gray-600 text-xs truncate font-mono">{window.location.origin}</p>
+              <p className="text-gray-600 text-xs truncate font-mono mt-1">
+                {window.location.host}
+              </p>
             </div>
           </div>
         </aside>
 
         {/* Mobile overlay */}
         {sidebarOpen && (
-          <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />
+          <div
+            className="fixed inset-0 bg-black/50 z-30 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
         )}
 
-        {/* ── Main Content ───────────────────────────────────────────────── */}
+        {/* ── Main Content ─────────────────────────────────────────────── */}
         <main className="flex-1 overflow-y-auto">
-          {/* Tab Header */}
+          {/* Tab header */}
           <div className="sticky top-0 z-20 bg-gray-950 border-b border-gray-800 px-6 py-4">
             <div className="flex items-center gap-3 flex-wrap">
-              {TABS.find(t => t.id === activeTab) && (
+              {currentTab && (
                 <>
-                  <span className={TABS.find(t => t.id === activeTab)!.color}>
-                    {TABS.find(t => t.id === activeTab)!.icon}
-                  </span>
-                  <h2 className="text-white font-semibold text-lg">
-                    {TABS.find(t => t.id === activeTab)!.label}
-                  </h2>
+                  <span className={currentTab.color}>{currentTab.icon}</span>
+                  <h2 className="text-white font-semibold text-lg">{currentTab.label}</h2>
                 </>
               )}
 
-              {/* Breadcrumb for editor */}
               {activeTab === 'editor' && editingPlaylist && (
                 <>
                   <span className="text-gray-600">/</span>
@@ -254,9 +277,13 @@ export default function App() {
             {/* Mobile bottom nav */}
             <div className="flex md:hidden gap-1 mt-3 overflow-x-auto pb-1">
               {TABS.map(tab => (
-                <button key={tab.id}
+                <button
+                  key={tab.id}
                   onClick={() => {
-                    if (tab.id === 'editor' && !editingPlaylistId) { setActiveTab('playlists'); return; }
+                    if (tab.id === 'editor' && !editingPlaylistId) {
+                      setActiveTab('playlists');
+                      return;
+                    }
                     setActiveTab(tab.id);
                   }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
@@ -264,15 +291,19 @@ export default function App() {
                   } ${tab.id === 'editor' && !editingPlaylistId ? 'opacity-40' : ''}`}
                 >
                   <span className={activeTab === tab.id ? tab.color : ''}>{tab.icon}</span>
-                  {tab.id === 'editor' ? (editingPlaylist ? editingPlaylist.name.slice(0, 10) + '…' : 'Editor') : tab.label}
+                  {tab.id === 'editor'
+                    ? (editingPlaylist ? editingPlaylist.name.slice(0, 8) + '…' : 'Editor')
+                    : tab.label}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Tab Content */}
+          {/* Tab content */}
           <div className="p-6">
-            {renderTab()}
+            <ErrorBoundary name={activeTab} key={activeTab}>
+              {renderTab()}
+            </ErrorBoundary>
           </div>
         </main>
       </div>
