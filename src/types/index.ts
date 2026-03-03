@@ -21,12 +21,29 @@ export interface Channel {
   streamType?: 'hls' | 'dash' | 'direct';
   licenseType?: string;
   licenseKey?: string;
+  licenseUrl?: string;
   userAgent?: string;
   referer?: string;
   cookie?: string;
   httpHeaders?: Record<string, string>;
   isTamil?: boolean;
   status?: string;
+  healthStatus?: 'ok' | 'error' | 'checking' | 'unknown';
+  lastHealthCheck?: string;
+  healthLatency?: number;
+  // Multi-source best-link
+  multiSource?: boolean;
+  combinedLinks?: CombinedLink[];
+}
+
+export interface CombinedLink {
+  channelId: string;
+  sourceId:  string;
+  sourceName?: string;
+  url:       string;
+  isDrm?:    boolean;
+  latency?:  number;
+  status?:   'live' | 'dead' | 'unknown' | 'checking';
 }
 
 export interface Group {
@@ -66,8 +83,8 @@ export interface PlaylistConfig {
   excludeGroups: string[];
   tamilOnly?: boolean;
   filterTags?: string[];
-  pinnedChannels: string[];    // channel IDs explicitly pinned/added
-  blockedChannels: string[];   // channel IDs explicitly blocked/removed
+  pinnedChannels: string[];
+  blockedChannels: string[];
   createdAt: string;
   updatedAt: string;
 }
