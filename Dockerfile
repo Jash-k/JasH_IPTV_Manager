@@ -1,88 +1,98 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1: deps — install ALL node_modules (cached unless package.json changes)
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Multi-stage Dockerfile — IPTV Manager
+# Stage 1: deps    — npm install (cached unless package.json changes)
+# Stage 2: builder — Vite build  (cached unless src/ changes)
+# Stage 3: runner  — lean production image ~120MB
+# =============================================================================
+
+# =============================================================================
+# Stage 1: deps — install node_modules
+# Cached as long as package.json / package-lock.json don't change
+# =============================================================================
 FROM node:20-alpine AS deps
 
 WORKDIR /app
 
-# Copy ONLY package files first — layer cached until package*.json changes
-COPY package.json package-lock.json* ./
+# Copy ONLY package files first — maximises layer cache hit rate
+COPY package.json ./
+COPY package-lock.json* ./
 
-# Install all deps (including devDeps needed for build)
-# Force Express 4 to avoid path-to-regexp wildcard breakage in Express 5
-RUN npm ci --prefer-offline --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund && \
+# Install all dependencies (including devDeps needed for Vite build)
+# Force Express 4 — Express 5 breaks wildcard routes via path-to-regexp
+RUN npm install --no-audit --no-fund && \
     npm install --save-exact \
       express@4.21.2 \
       cors@2.8.5 \
       axios@1.7.7 \
     --no-audit --no-fund --legacy-peer-deps
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2: builder — compile React/Vite (cached unless src/ changes)
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Stage 2: builder — compile React / Vite
+# Cached as long as src/ and config files don't change
+# =============================================================================
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy installed node_modules from deps stage (pre-cached)
+# Bring in node_modules from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 
-# Copy build config files (cached layer — rarely changes)
-COPY package.json vite.config.ts tsconfig.json index.html ./
+# Copy build config (separate layer — changes less often than src/)
+COPY package.json ./
+COPY index.html ./
+COPY vite.config.ts ./
+COPY tsconfig.json ./
 
-# Copy source code (invalidates only when source changes)
+# Copy source code (this layer invalidates when src changes)
 COPY src/ ./src/
 
-# Build React app — outputs to /app/dist
+# Build React app → /app/dist
 RUN npm run build
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 3: runner — lean production image (no devDeps, no build tools)
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Stage 3: runner — lean production image
+# Only production node_modules + built dist + server.cjs
+# =============================================================================
 FROM node:20-alpine AS runner
 
-# Install ONLY runtime system deps: FFmpeg + curl (for keepalive)
-RUN apk add --no-cache \
-    ffmpeg \
-    curl \
-    ca-certificates \
-    tini
+# Install runtime tools only
+RUN apk add --no-cache curl tini
 
 WORKDIR /app
 
-# Copy ONLY production node_modules from deps stage
+# Copy production node_modules from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 
-# Copy built React dist from builder stage
+# Copy built React frontend from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Copy ONLY the server file (single CJS file — no src/ needed)
+# Copy server (single file — CJS bypasses "type":"module" in package.json)
 COPY server.cjs ./server.cjs
 
-# Create persistent data directories
-RUN mkdir -p /data/db /data/hls-output && \
-    chmod -R 777 /data
+# Copy package.json (needed by Node for module resolution)
+COPY package.json ./package.json
 
-# Drop to non-root user for security
+# Create data directory for persistent DB
+RUN mkdir -p /data/db && chmod -R 777 /data
+
+# Non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001 && \
+    adduser  -S nodejs -u 1001 && \
     chown -R nodejs:nodejs /app /data
 
 USER nodejs
 
-# Expose port
 EXPOSE 10000
 
-# Use tini as PID 1 for proper signal handling (fast shutdown/restart)
+# tini as PID 1 — proper signal handling, fast shutdown
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Health check — fast, lightweight
+# Docker health check
 HEALTHCHECK \
   --interval=30s \
   --timeout=5s \
-  --start-period=10s \
+  --start-period=15s \
   --retries=3 \
   CMD curl -sf http://localhost:10000/health || exit 1
 
-# Start server
 CMD ["node", "server.cjs"]

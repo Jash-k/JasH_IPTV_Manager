@@ -1,7 +1,33 @@
+# Dependencies
 node_modules/
+.npm/
+
+# Build output — Render builds this inside Docker
 dist/
+build/
+.vite/
+
+# Runtime data — never commit DB
 db.json
+channels.json
+data/
+*.db
+
+# Logs
+logs/
 *.log
-.env
+npm-debug.log*
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# HLS output
+output/
+hls-output/
+segments/

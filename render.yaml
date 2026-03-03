@@ -5,13 +5,12 @@ services:
     dockerfilePath: ./Dockerfile
     plan: free
 
-    # ── Persistent disk — survives redeploys ─────────────────────────────────
+    # Persistent disk — DB survives redeploys
     disk:
       name: iptv-data
       mountPath: /data
       sizeGB: 1
 
-    # ── Environment variables ─────────────────────────────────────────────────
     envVars:
       - key: PORT
         value: "10000"
@@ -27,5 +26,4 @@ services:
           type: web
           property: host
 
-    # ── Health check path ─────────────────────────────────────────────────────
     healthCheckPath: /health
