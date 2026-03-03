@@ -178,32 +178,28 @@ export const useStore = create<AppState>((set, get) => ({
       else if (source.url) content = await fetchSourceContent(source.url);
       else throw new Error('No URL or content provided');
 
-      const newChannels = parseAny(content, id);
-      const taggedChannels = newChannels.map(ch => ({
+      const parsed = parseAny(content, id);
+
+      // ── STRIP DRM channels immediately on import ──────────────────────────
+      const isDRM = (ch: Channel) => !!(
+        ch.licenseType || ch.licenseKey || ch.drmKey || ch.drmKeyId || ch.isDrm
+      );
+
+      const directChannels = parsed.filter(ch => !isDRM(ch));
+      const drmCount       = parsed.length - directChannels.length;
+
+      // Tag Tamil
+      const taggedChannels = directChannels.map(ch => ({
         ...ch,
         isTamil: isTamilChannel(ch),
+        enabled: true,
+        isActive: true,
       }));
 
       const tamilCount = taggedChannels.filter(ch => ch.isTamil).length;
 
-      // Auto-create DRM proxies
-      const drmChannels = taggedChannels.filter(c => c.isDrm && (c.drmKeyId || c.licenseKey));
-      const existingIds = new Set(get().drmProxies.map(d => d.channelId));
-      const newProxies: DrmProxy[] = drmChannels
-        .filter(c => !existingIds.has(c.id))
-        .map(c => ({
-          id: uuidv4(), channelId: c.id, channelName: c.name,
-          keyId: c.drmKeyId || '', key: c.drmKey || '',
-          licenseType: c.licenseType || 'clearkey',
-          licenseUrl: c.licenseKey?.startsWith('http') ? c.licenseKey : '',
-          proxyUrl: `${BASE_URL}/proxy/drm/${c.id}`,
-          isActive: true,
-          notes: `Auto-created from source: ${source.name}`,
-        }));
-
       set(s => ({
         channels: [...s.channels.filter(ch => ch.sourceId !== id), ...taggedChannels],
-        drmProxies: [...s.drmProxies, ...newProxies],
       }));
 
       get().updateSource(id, {
@@ -211,6 +207,9 @@ export const useStore = create<AppState>((set, get) => ({
         lastRefreshed: new Date().toISOString(),
         channelCount: taggedChannels.length,
         tamilCount,
+        errorMessage: drmCount > 0
+          ? `✅ ${taggedChannels.length} direct channels loaded. ${drmCount} DRM streams removed.`
+          : undefined,
       });
       get().syncGroups();
       get().tagMultiSourceChannels();

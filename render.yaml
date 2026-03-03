@@ -3,15 +3,15 @@ services:
     name: iptv-manager
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
+    plan: free
 
-    # ── Persistent disk for DB + HLS segments ─────────────────────────────────
+    # ── Persistent disk — survives redeploys ─────────────────────────────────
     disk:
       name: iptv-data
       mountPath: /data
-      sizeGB: 5
+      sizeGB: 1
 
-    # ── Environment variables ──────────────────────────────────────────────────
+    # ── Environment variables ─────────────────────────────────────────────────
     envVars:
       - key: PORT
         value: "10000"
@@ -19,22 +19,13 @@ services:
         value: production
       - key: DB_FILE
         value: /data/db/db.json
-      - key: OUTPUT_DIR
-        value: /data/hls-output
-      - key: VIDEO_CODEC
-        value: copy
-      - key: AUDIO_CODEC
-        value: copy
-      - key: HLS_SEGMENT_TIME
-        value: "4"
-      - key: HLS_LIST_SIZE
-        value: "6"
-      - key: HW_ACCEL
-        value: none
-      - key: CLEARKEY_PAIRS
-        value: ""
       - key: API_KEY
         generateValue: true
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          name: iptv-manager
+          type: web
+          property: host
 
-    # ── Health check ───────────────────────────────────────────────────────────
+    # ── Health check path ─────────────────────────────────────────────────────
     healthCheckPath: /health

@@ -1,0 +1,70 @@
+# ── Node ──────────────────────────────────────────────────────────────────────
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn
+
+# ── Build output (builder stage builds this — don't copy to Docker context) ───
+dist
+build
+.vite
+
+# ── Data / DB (mounted as volume in production) ───────────────────────────────
+/data
+db.json
+channels.json
+*.db
+
+# ── Dev / Editor configs ──────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+.editorconfig
+.eslintrc*
+.prettierrc*
+*.md
+README*
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# ── TypeScript source (not needed in production — only compiled dist) ─────────
+src
+tsconfig*.json
+vite.config.ts
+index.html
+
+# ── Streaming server (separate — not used in main container) ──────────────────
+streaming-server
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs
+*.log
+pids
+*.pid
+*.seed
+
+# ── HLS output (mounted volume) ───────────────────────────────────────────────
+output
+hls-output
+segments
+
+# ── CI/CD ─────────────────────────────────────────────────────────────────────
+.github
+.travis.yml
+Jenkinsfile
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# ── Supervisor (not used in new image) ────────────────────────────────────────
+supervisord.conf
+supervisord.log

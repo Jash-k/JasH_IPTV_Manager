@@ -21,48 +21,74 @@ export function parseAny(content: string, sourceId: string): Channel[] {
   return [];
 }
 
+// ── DRM check ─────────────────────────────────────────────────────────────────
+export function isDRMChannel(ch: Channel): boolean {
+  return !!(ch.licenseType || ch.licenseKey || ch.drmKey || ch.drmKeyId || ch.isDrm);
+}
+
+// ── M3U Generator — pure 302 redirect, NO DRM logic ──────────────────────────
 export function generateM3U(channels: Channel[], baseUrl: string): string {
-  // CRITICAL: #EXTM3U must be first line, no BOM, no leading whitespace
   const lines: string[] = [];
   lines.push('#EXTM3U x-tvg-url=""');
 
-  // Accept channels that are enabled (enabled !== false) OR isActive — both field names used
+  const esc = (s: unknown) =>
+    String(s || '').replace(/"/g, "'").replace(/[\r\n]/g, ' ');
+
+  const normKey = (n: string) =>
+    String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+
+  // Only direct (non-DRM) channels
   const active = channels
-    .filter(c => c.enabled !== false || c.isActive === true)
+    .filter(c => {
+      if (c.enabled === false || c.isActive === false) return false;
+      if (isDRMChannel(c)) return false;
+      return true;
+    })
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
+  // Count occurrences of each normalized name for multi-source detection
+  const nameCount: Record<string, number> = {};
   active.forEach(ch => {
-    const tvgId   = ch.tvgId    ? ` tvg-id="${String(ch.tvgId).replace(/"/g,'')}"` : '';
-    const tvgName = ` tvg-name="${String(ch.tvgName || ch.name || '').replace(/"/g,'')}"`;
-    const logo    = ch.logo     ? ` tvg-logo="${String(ch.logo).replace(/"/g,'')}"` : '';
-    const group   = ` group-title="${String(ch.group || 'Uncategorized').replace(/"/g,'')}"`;
-    const lang    = ch.language ? ` tvg-language="${String(ch.language).replace(/"/g,'')}"` : '';
-    const country = ch.country  ? ` tvg-country="${String(ch.country).replace(/"/g,'')}"` : '';
-    const name    = String(ch.name || 'Unknown').replace(/,/g, ' ');
-    const hasDRM  = !!(ch.isDrm || ch.licenseType || ch.licenseKey);
-    const urlLower = (ch.url || '').toLowerCase();
-
-    // DRM streams → server proxy endpoint (full pipeline)
-    // Direct streams → /proxy/redirect/:id (server does 302 to original URL)
-    let streamUrl: string;
-    if (hasDRM) {
-      if (urlLower.includes('.mpd') || urlLower.includes('/dash/') || urlLower.includes('manifest.mpd'))
-        streamUrl = `${baseUrl}/live/${ch.id}.mpd`;
-      else if (urlLower.includes('.m3u8') || urlLower.includes('/hls/'))
-        streamUrl = `${baseUrl}/live/${ch.id}.m3u8`;
-      else
-        streamUrl = `${baseUrl}/live/${ch.id}.ts`;
-    } else {
-      streamUrl = `${baseUrl}/proxy/redirect/${ch.id}`;
-    }
-
-    lines.push(`#EXTINF:-1${tvgId}${tvgName}${logo}${group}${lang}${country},${name}`);
-    lines.push(streamUrl);
+    const k = normKey(ch.name);
+    nameCount[k] = (nameCount[k] || 0) + 1;
   });
 
-  return lines.join('\r\n') + '\r\n';
+  const seen = new Set<string>();
+
+  active.forEach(ch => {
+    const key     = normKey(ch.name);
+    const isMulti = (nameCount[key] || 0) > 1;
+
+    // For multi-source channels, only emit one entry (the first encountered)
+    if (isMulti && seen.has(key)) return;
+    seen.add(key);
+
+    const tvgId   = ch.tvgId    ? ` tvg-id="${esc(ch.tvgId)}"`          : '';
+    const tvgName = ` tvg-name="${esc(ch.tvgName || ch.name)}"`;
+    const logo    = ch.logo     ? ` tvg-logo="${esc(ch.logo)}"`          : '';
+    const group   = ` group-title="${esc(ch.group || 'Uncategorized')}"`;
+    const lang    = ch.language ? ` tvg-language="${esc(ch.language)}"` : '';
+    const country = ch.country  ? ` tvg-country="${esc(ch.country)}"`   : '';
+    const tamil   = ch.isTamil  ? ` x-tamil="true"`                     : '';
+    const multi   = isMulti     ? ` x-multi-source="true" x-link-count="${nameCount[key]}"` : '';
+    const name    = esc(ch.name || 'Unknown');
+
+    // ALL streams → pure 302 redirect (no proxy, no DRM)
+    const streamUrl = isMulti
+      ? `${baseUrl}/redirect/best/${encodeURIComponent(ch.name)}`
+      : `${baseUrl}/redirect/${ch.id}`;
+
+    lines.push(
+      `#EXTINF:-1${tvgId}${tvgName}${logo}${group}${lang}${country}${tamil}${multi},${name}`
+    );
+    lines.push(streamUrl);
+    lines.push('');
+  });
+
+  return lines.join('\r\n');
 }
 
+// ── Tamil detection ───────────────────────────────────────────────────────────
 const TAMIL_KEYWORDS = [
   'tamil', 'sun tv', 'vijay', 'zee tamil', 'kalaignar', 'puthiya thalaimurai',
   'news18 tamil', 'polimer', 'jaya', 'raj tv', 'captain tv', 'vendhar',
@@ -71,11 +97,15 @@ const TAMIL_KEYWORDS = [
   'doordarshan tamil', 'imayam', 'sun music', 'star vijay', 'colors tamil',
   'news7 tamil', 'tamilnadu', 'madurai', 'coimbatore', 'et now tamil',
   'cnbc tamil', 'kaveri', 'rain bow', 'rainbow', 'vikatan', 'nakkheeran',
+  'kollywood', 'tamizh',
 ];
 
 export function isTamilChannel(ch: Channel): boolean {
   const str = (v: unknown) => (typeof v === 'string' ? v : String(v ?? ''));
-  const lower = `${str(ch.name)} ${str(ch.group)} ${str(ch.language)} ${str(ch.tvgName)} ${str(ch.tvgId)}`.toLowerCase();
+  const lower = [
+    str(ch.name), str(ch.group), str(ch.language),
+    str(ch.tvgName), str(ch.tvgId),
+  ].join(' ').toLowerCase();
   return TAMIL_KEYWORDS.some(k => lower.includes(k)) || str(ch.language).toLowerCase() === 'tamil';
 }
 

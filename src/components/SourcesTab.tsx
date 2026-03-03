@@ -4,11 +4,12 @@ import { Source } from '../types';
 import {
   Plus, Trash2, RefreshCw, Upload, Link, CheckCircle, XCircle,
   Clock, Edit2, Save, X, FileJson, FileText, Globe, Timer,
-  AlertCircle, Zap, Filter, Heart, Activity, Shield,
+  AlertCircle, Zap, Heart, Activity,
   ExternalLink, Copy, Check, Wifi, WifiOff, Loader,
+  ShieldOff, GitMerge,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { detectFormat, isTamilChannel } from '../utils/parser';
+import { detectFormat } from '../utils/parser';
 
 const SOURCE_TYPE_ICONS: Record<string, React.ReactNode> = {
   m3u:  <FileText className="w-4 h-4 text-green-400" />,
@@ -19,8 +20,8 @@ const SOURCE_TYPE_ICONS: Record<string, React.ReactNode> = {
 };
 
 const EXAMPLE_URLS = [
-  { label: '🇮🇳 India IPTV',  url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/in.m3u',     type: 'm3u' as const },
-  { label: '🌐 World IPTV',  url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/index.m3u',          type: 'm3u' as const },
+  { label: '🇮🇳 India IPTV',  url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/in.m3u', type: 'm3u' as const },
+  { label: '🌐 World IPTV',   url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/index.m3u',     type: 'm3u' as const },
 ];
 
 type FormState = {
@@ -28,8 +29,8 @@ type FormState = {
   autoRefresh: boolean; refreshInterval: number;
 };
 
-// ── Per-source Tamil filter toggle button ─────────────────────────────────────
-function TamilFilterBtn({
+// ── Per-source Tamil filter button ────────────────────────────────────────────
+function TamilBtn({
   sourceId, tamilCount, isActive, onToggle,
 }: {
   sourceId: string;
@@ -41,37 +42,29 @@ function TamilFilterBtn({
   return (
     <button
       onClick={e => { e.stopPropagation(); onToggle(sourceId, !isActive); }}
-      title={isActive ? 'Tamil filter ON — click to show all channels' : `Filter to ${tamilCount} Tamil channels only`}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border select-none ${
+      title={isActive ? 'Tamil filter ON — click to show all' : `Show only ${tamilCount} Tamil channels`}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold
+        transition-all border select-none ${
         isActive
-          ? 'bg-orange-500 border-orange-400 text-white shadow-lg shadow-orange-500/40 scale-105'
-          : 'bg-orange-500/10 border-orange-500/30 text-orange-400 hover:bg-orange-500/20 hover:border-orange-500/60 hover:scale-105'
+          ? 'bg-orange-500 border-orange-400 text-white shadow-lg shadow-orange-500/40 scale-105 ring-2 ring-orange-400/40'
+          : 'bg-orange-500/10 border-orange-500/40 text-orange-400 hover:bg-orange-500/20 hover:border-orange-400 hover:scale-105'
       }`}
     >
       <Heart className={`w-3.5 h-3.5 ${isActive ? 'fill-white' : 'fill-orange-400'}`} />
-      {isActive ? `🎬 Tamil ON (${tamilCount})` : `🎬 ${tamilCount} Tamil`}
+      {isActive
+        ? <span>🎬 Tamil <span className="bg-white/20 px-1 rounded">{tamilCount}</span></span>
+        : <span>🎬 Tamil ({tamilCount})</span>
+      }
     </button>
   );
 }
 
-// ── Stream health badge ───────────────────────────────────────────────────────
-function HealthBadge({ status, latency }: { status?: string; latency?: number }) {
+// ── Health badge ──────────────────────────────────────────────────────────────
+function HealthBadge({ status }: { status?: string }) {
   if (!status || status === 'unknown') return null;
-  if (status === 'ok') return (
-    <span className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full">
-      <Wifi className="w-3 h-3" /> Live {latency ? `${latency}ms` : ''}
-    </span>
-  );
-  if (status === 'error') return (
-    <span className="flex items-center gap-1 text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full">
-      <WifiOff className="w-3 h-3" /> Error
-    </span>
-  );
-  if (status === 'checking') return (
-    <span className="flex items-center gap-1 text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-2 py-0.5 rounded-full">
-      <Loader className="w-3 h-3 animate-spin" /> Checking
-    </span>
-  );
+  if (status === 'ok')       return <span className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full"><Wifi className="w-3 h-3" /> Live</span>;
+  if (status === 'error')    return <span className="flex items-center gap-1 text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full"><WifiOff className="w-3 h-3" /> Error</span>;
+  if (status === 'checking') return <span className="flex items-center gap-1 text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 px-2 py-0.5 rounded-full"><Loader className="w-3 h-3 animate-spin" /> Checking</span>;
   return null;
 }
 
@@ -81,12 +74,12 @@ export default function SourcesTab() {
     tamilSourceFilter, setTamilSourceFilter, serverUrl,
   } = useStore();
 
-  const [showAdd, setShowAdd]     = useState(false);
-  const [editId, setEditId]       = useState<string | null>(null);
-  const [form, setForm]           = useState<FormState>({ name: '', url: '', type: 'url', autoRefresh: false, refreshInterval: 30 });
-  const [inputMode, setInputMode] = useState<'url' | 'file'>('url');
+  const [showAdd, setShowAdd]         = useState(false);
+  const [editId, setEditId]           = useState<string | null>(null);
+  const [form, setForm]               = useState<FormState>({ name: '', url: '', type: 'url', autoRefresh: false, refreshInterval: 30 });
+  const [inputMode, setInputMode]     = useState<'url' | 'file'>('url');
   const [detectedFmt, setDetectedFmt] = useState('');
-  const [copied, setCopied]       = useState<string | null>(null);
+  const [copied, setCopied]           = useState<string | null>(null);
   const [healthChecking, setHealthChecking] = useState<Record<string, boolean>>({});
 
   const fileRef      = useRef<HTMLInputElement>(null);
@@ -132,7 +125,7 @@ export default function SourcesTab() {
       const fmt = detectFormat(content);
       setDetectedFmt(fmt);
       addSource({ name: form.name || file.name, type: detectedType, content, autoRefresh: false, refreshInterval: 30 });
-      toast.success(`✅ ${file.name} — ${fmt.toUpperCase()} detected`);
+      toast.success(`✅ ${file.name} — ${fmt.toUpperCase()} detected. DRM streams will be stripped.`);
       setShowAdd(false); resetForm();
     };
     reader.readAsText(file);
@@ -146,7 +139,7 @@ export default function SourcesTab() {
       toast.success('Source updated'); setEditId(null);
     } else {
       addSource({ name: form.name, url: form.url, type: form.type, autoRefresh: form.autoRefresh, refreshInterval: form.refreshInterval });
-      toast.success('🚀 Source added — fetching & parsing...');
+      toast.success('🚀 Fetching & parsing... DRM streams auto-removed.');
     }
     resetForm();
   };
@@ -161,21 +154,18 @@ export default function SourcesTab() {
     setDetectedFmt(''); setEditId(null); setShowAdd(false);
   };
 
-  // ── Per-source Tamil filter toggle ────────────────────────────────────────
   const toggleTamilFilter = (sourceId: string, val: boolean) => {
     updateSource(sourceId, { tamilFilter: val });
-    toast.success(val ? '🎬 Tamil filter ON for this source' : '🎬 Tamil filter OFF', { duration: 1500 });
+    toast.success(val ? '🎬 Tamil filter ON for this source' : '🎬 Showing all channels', { duration: 1500 });
   };
 
-  // ── Copy playlist URL ─────────────────────────────────────────────────────
   const copyUrl = (key: string, url: string) => {
     navigator.clipboard.writeText(url);
     setCopied(key);
     setTimeout(() => setCopied(null), 2000);
-    toast.success('📋 URL copied!');
+    toast.success('📋 Copied!');
   };
 
-  // ── Health check a single source (sample first 10 channels) ──────────────
   const checkSourceHealth = async (srcId: string) => {
     const srcChannels = channels.filter(ch => ch.sourceId === srcId).slice(0, 10);
     if (!srcChannels.length) { toast.error('No channels to check'); return; }
@@ -191,9 +181,9 @@ export default function SourcesTab() {
       });
       if (resp.ok) {
         const data = await resp.json() as { results: Record<string, { ok: boolean }> };
-        const okCount = Object.values(data.results).filter((r) => r.ok).length;
+        const okCount = Object.values(data.results || {}).filter(r => r.ok).length;
         updateSource(srcId, { healthStatus: okCount > 0 ? 'ok' : 'error' });
-        toast.success(`🏥 Health: ${okCount}/${srcChannels.length} channels live`);
+        toast.success(`🏥 ${okCount}/${srcChannels.length} channels live`);
       } else {
         updateSource(srcId, { healthStatus: 'error' });
         toast.error('Health check failed');
@@ -206,12 +196,12 @@ export default function SourcesTab() {
     }
   };
 
-  // ── Enrich sources with computed stats ───────────────────────────────────
+  // Enrich sources with stats
   const enriched = sources.map(src => {
-    const srcChannels = channels.filter(ch => ch.sourceId === src.id);
-    const tamilCount  = srcChannels.filter(ch => ch.isTamil || isTamilChannel(ch)).length;
-    const drmCount    = srcChannels.filter(ch => ch.isDrm || !!ch.licenseType).length;
-    return { ...src, tamilCount, totalCount: srcChannels.length, drmCount };
+    const srcChs   = channels.filter(ch => ch.sourceId === src.id);
+    const tamilCnt = srcChs.filter(ch => ch.isTamil).length;
+    const multiCnt = srcChs.filter(ch => ch.multiSource).length;
+    return { ...src, tamilCount: tamilCnt, totalCount: srcChs.length, multiCount: multiCnt };
   });
 
   const displayed = tamilSourceFilter
@@ -219,20 +209,22 @@ export default function SourcesTab() {
     : enriched;
 
   const totalTamil    = channels.filter(ch => ch.isTamil).length;
-  const totalDRM      = channels.filter(ch => ch.isDrm || !!ch.licenseType).length;
   const totalChannels = channels.length;
   const base          = serverUrl || window.location.origin;
+  const tamilSrcCount = enriched.filter(s => s.tamilCount > 0).length;
 
   return (
     <div className="space-y-5">
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-white">Playlist Sources</h2>
           <p className="text-gray-500 text-sm mt-0.5">
             {sources.length} sources · {totalChannels.toLocaleString()} channels
             {totalTamil > 0 && <span className="text-orange-400"> · {totalTamil.toLocaleString()} 🎬 Tamil</span>}
-            {totalDRM   > 0 && <span className="text-purple-400"> · {totalDRM} 🔐 DRM</span>}
+            <span className="text-green-400"> · Direct 302 only</span>
+            <span className="text-red-400"> · DRM auto-stripped</span>
           </p>
         </div>
         <button
@@ -243,49 +235,54 @@ export default function SourcesTab() {
         </button>
       </div>
 
-      {/* Global Tamil filter bar */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <button
-          onClick={() => setTamilSourceFilter(!tamilSourceFilter)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all border ${
-            tamilSourceFilter
-              ? 'bg-orange-500 border-orange-400 text-white shadow-lg shadow-orange-500/30'
-              : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700 hover:border-orange-600 hover:text-orange-400'
-          }`}
-        >
-          <Heart className={`w-4 h-4 ${tamilSourceFilter ? 'fill-white' : ''}`} />
-          🎬 Tamil Sources Only
-          <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${tamilSourceFilter ? 'bg-orange-400 text-orange-900' : 'bg-gray-700 text-gray-400'}`}>
-            {enriched.filter(s => s.tamilCount > 0).length}
-          </span>
-        </button>
-        {tamilSourceFilter && (
-          <button onClick={() => setTamilSourceFilter(false)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-gray-800 border border-gray-700 text-gray-400 hover:text-white rounded-lg text-sm transition-colors">
-            <Filter className="w-3.5 h-3.5" /> Clear Filter
-          </button>
-        )}
-      </div>
-
-      {/* Info banner */}
-      <div className="bg-gray-800/60 border border-gray-700/60 rounded-xl p-4">
-        <div className="flex items-start gap-3">
-          <Zap className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
-          <div>
-            <p className="text-white text-sm font-medium mb-1">Auto-Detection · Smart Routing · Health Check</p>
-            <p className="text-gray-400 text-xs leading-relaxed">
-              Supports <span className="text-green-400 font-mono">.m3u/.m3u8</span> (KODIPROP, EXTVLCOPT),{' '}
-              <span className="text-yellow-400 font-mono">.json</span> (JioTV, nested),{' '}
-              <span className="text-blue-400 font-mono">.php/APIs</span>, GitHub raw, Pastebin.
-              Tamil auto-detected. DRM auto-extracted.{' '}
-              <span className="text-green-300 font-semibold">Direct streams → 302 redirect (zero overhead).</span>{' '}
-              <span className="text-purple-300 font-semibold">DRM streams → server proxy + license.</span>
-            </p>
-          </div>
+      {/* ── Info banner ── */}
+      <div className="bg-gray-800/60 border border-gray-700/60 rounded-xl p-4 flex items-start gap-3">
+        <ShieldOff className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+        <div className="space-y-1">
+          <p className="text-white text-sm font-medium">
+            🔁 Direct 302 Redirect — No Proxy — DRM Auto-Stripped
+          </p>
+          <p className="text-gray-400 text-xs leading-relaxed">
+            All streams served as pure <span className="text-green-300 font-semibold">302 redirects</span> to original URLs — zero server overhead.
+            DRM-protected streams (Widevine, ClearKey, PlayReady) are{' '}
+            <span className="text-red-300 font-semibold">automatically removed</span> when sources are imported.
+            Supports <span className="text-green-400 font-mono">.m3u/.m3u8</span>,{' '}
+            <span className="text-yellow-400 font-mono">.json</span> (JioTV, generic),{' '}
+            <span className="text-blue-400 font-mono">.php/API</span>, GitHub raw, Pastebin.
+            Tamil channels auto-detected from name/group.
+          </p>
         </div>
       </div>
 
-      {/* Add/Edit form */}
+      {/* ── Global Tamil sources filter ── */}
+      {tamilSrcCount > 0 && (
+        <div className="flex items-center gap-3 flex-wrap bg-orange-500/5 border border-orange-500/20 rounded-xl px-4 py-3">
+          <Heart className="w-4 h-4 text-orange-400 fill-orange-400 shrink-0" />
+          <span className="text-orange-300 text-sm font-medium">
+            {tamilSrcCount} sources contain Tamil channels
+          </span>
+          <button
+            onClick={() => setTamilSourceFilter(!tamilSourceFilter)}
+            className={`ml-auto flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-semibold transition-all border ${
+              tamilSourceFilter
+                ? 'bg-orange-500 border-orange-400 text-white'
+                : 'bg-gray-800 border-gray-600 text-gray-300 hover:border-orange-500 hover:text-orange-400'
+            }`}
+          >
+            {tamilSourceFilter ? '✓ Tamil Sources Only' : 'Show Tamil Sources Only'}
+          </button>
+          {tamilSourceFilter && (
+            <button
+              onClick={() => setTamilSourceFilter(false)}
+              className="text-gray-500 hover:text-white text-xs transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Add/Edit form ── */}
       {showAdd && (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 space-y-4 shadow-xl">
           <div className="flex items-center justify-between">
@@ -335,7 +332,7 @@ export default function SourcesTab() {
                 className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
                 placeholder="https://raw.githubusercontent.com/... or http://server.com/playlist.m3u" />
               <p className="text-gray-500 text-xs mt-1.5 flex items-center gap-1">
-                <AlertCircle className="w-3 h-3" /> GitHub raw, Pastebin, M3U/JSON/PHP — CORS proxy applied automatically.
+                <AlertCircle className="w-3 h-3" /> GitHub raw, Pastebin, direct M3U/JSON/PHP URLs. CORS handled server-side.
               </p>
               <div className="flex flex-wrap gap-2 mt-2">
                 {EXAMPLE_URLS.map(ex => (
@@ -366,7 +363,6 @@ export default function SourcesTab() {
             </div>
           )}
 
-          {/* Auto Refresh */}
           <div className="flex items-center gap-4 flex-wrap p-3 bg-gray-900/50 rounded-lg border border-gray-700/50">
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={form.autoRefresh}
@@ -399,14 +395,14 @@ export default function SourcesTab() {
         </div>
       )}
 
-      {/* Source List */}
+      {/* ── Source list ── */}
       {displayed.length === 0 ? (
         <div className="text-center py-20 text-gray-500">
           <Globe className="w-14 h-14 mx-auto mb-4 opacity-20" />
           <p className="text-lg font-medium text-gray-400 mb-2">
             {tamilSourceFilter ? 'No Tamil sources found' : 'No sources added yet'}
           </p>
-          <p className="text-sm">{tamilSourceFilter ? 'Add sources containing Tamil channels' : 'Add a playlist URL or upload a file'}</p>
+          <p className="text-sm">{tamilSourceFilter ? 'Add sources with Tamil channels' : 'Add a playlist URL or upload a file'}</p>
           {!tamilSourceFilter && (
             <button onClick={() => setShowAdd(true)}
               className="mt-4 inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
@@ -418,13 +414,13 @@ export default function SourcesTab() {
         <div className="space-y-3">
           {displayed.map(src => (
             <div key={src.id}
-              className={`bg-gray-800 border rounded-xl p-4 transition-all ${
-                src.status === 'error' ? 'border-red-800/50' :
-                src.tamilFilter ? 'border-orange-500/50 shadow-md shadow-orange-500/10' :
-                'border-gray-700 hover:border-gray-600'
+              className={`bg-gray-800 border rounded-xl transition-all ${
+                src.status === 'error'  ? 'border-red-800/50' :
+                src.tamilFilter         ? 'border-orange-500/60 shadow-lg shadow-orange-500/10' :
+                                         'border-gray-700 hover:border-gray-600'
               }`}>
 
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start justify-between gap-3 p-4">
                 <div className="flex items-start gap-3 flex-1 min-w-0">
                   {/* Icon */}
                   <div className="mt-0.5 p-2 bg-gray-700/50 rounded-lg shrink-0">
@@ -432,18 +428,13 @@ export default function SourcesTab() {
                   </div>
 
                   <div className="flex-1 min-w-0">
-                    {/* Name row */}
+                    {/* Name + badges row */}
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-white font-medium">{src.name}</h3>
                       <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded-full uppercase font-mono">{src.type}</span>
                       {src.autoRefresh && (
                         <span className="text-xs bg-blue-900/50 text-blue-400 border border-blue-800/30 px-2 py-0.5 rounded-full flex items-center gap-1">
-                          <Timer className="w-3 h-3" /> {src.refreshInterval}min
-                        </span>
-                      )}
-                      {(src.drmCount || 0) > 0 && (
-                        <span className="text-xs bg-purple-500/10 text-purple-400 border border-purple-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
-                          <Shield className="w-3 h-3" /> {src.drmCount} DRM
+                          <Timer className="w-3 h-3" /> {src.refreshInterval}m
                         </span>
                       )}
                       <HealthBadge status={src.healthStatus} />
@@ -454,7 +445,7 @@ export default function SourcesTab() {
                       <p className="text-gray-500 text-xs mt-1 italic">Local file · {(src.content.length / 1024).toFixed(1)} KB</p>
                     )}
 
-                    {/* Status row */}
+                    {/* Status */}
                     <div className="flex items-center gap-3 mt-2 flex-wrap">
                       {src.status === 'loading' && (
                         <span className="flex items-center gap-1.5 text-yellow-400 text-xs">
@@ -463,9 +454,12 @@ export default function SourcesTab() {
                       )}
                       {src.status === 'success' && (
                         <span className="flex items-center gap-1.5 text-green-400 text-xs">
-                          <CheckCircle className="w-3 h-3" /> {(src.channelCount || 0).toLocaleString()} channels
+                          <CheckCircle className="w-3 h-3" /> {(src.totalCount || 0).toLocaleString()} direct channels
                           {(src.tamilCount || 0) > 0 && (
                             <span className="text-orange-400 ml-1">· {src.tamilCount} 🎬 Tamil</span>
+                          )}
+                          {(src.multiCount || 0) > 0 && (
+                            <span className="text-blue-400 ml-1">· {src.multiCount} 🔀 multi</span>
                           )}
                         </span>
                       )}
@@ -482,33 +476,39 @@ export default function SourcesTab() {
                       )}
                     </div>
 
-                    {/* Loading bar */}
                     {src.status === 'loading' && (
                       <div className="mt-2 h-1 bg-gray-700 rounded-full overflow-hidden">
                         <div className="h-full bg-blue-500 rounded-full animate-pulse w-2/3" />
                       </div>
                     )}
 
-                    {/* ── Controls row (appears after successful load) ── */}
-                    {src.status === 'success' && (src.channelCount || 0) > 0 && (
+                    {/* DRM strip notice */}
+                    {src.status === 'success' && src.errorMessage && src.errorMessage.includes('DRM') && (
+                      <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg w-fit">
+                        <ShieldOff className="w-3 h-3 shrink-0" /> {src.errorMessage}
+                      </div>
+                    )}
+
+                    {/* ── Controls row — visible after load ── */}
+                    {src.status === 'success' && (src.totalCount || 0) > 0 && (
                       <div className="mt-3 flex items-center gap-2 flex-wrap">
 
-                        {/* 🎬 Per-source Tamil filter button — ONE per source */}
-                        <TamilFilterBtn
+                        {/* 🎬 TAMIL FILTER — prominent per-source button */}
+                        <TamilBtn
                           sourceId={src.id}
                           tamilCount={src.tamilCount || 0}
                           isActive={src.tamilFilter}
                           onToggle={toggleTamilFilter}
                         />
 
-                        {/* Tamil filter active badge */}
-                        {src.tamilFilter && (
-                          <span className="text-xs text-orange-300 bg-orange-500/10 border border-orange-500/20 px-2 py-0.5 rounded-full">
-                            🎬 Showing {src.tamilCount} Tamil only
+                        {/* Multi-source indicator */}
+                        {(src.multiCount || 0) > 0 && (
+                          <span className="flex items-center gap-1 text-xs bg-blue-500/10 border border-blue-500/20 text-blue-400 px-2 py-1 rounded-lg">
+                            <GitMerge className="w-3 h-3" /> {src.multiCount} multi-source
                           </span>
                         )}
 
-                        {/* Copy source playlist URL */}
+                        {/* Playlist URL */}
                         <button
                           onClick={() => copyUrl(src.id, `${base}/api/playlist/source/${src.id}.m3u`)}
                           className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:bg-blue-500/20 transition-colors"
@@ -517,7 +517,7 @@ export default function SourcesTab() {
                           Playlist URL
                         </button>
 
-                        {/* Copy Tamil playlist URL */}
+                        {/* Tamil playlist URL */}
                         {(src.tamilCount || 0) > 0 && (
                           <button
                             onClick={() => copyUrl(src.id + '_t', `${base}/api/playlist/source/${src.id}/tamil.m3u`)}
@@ -528,16 +528,30 @@ export default function SourcesTab() {
                           </button>
                         )}
 
-                        {/* Health check button */}
+                        {/* Health check */}
                         <button
                           onClick={() => checkSourceHealth(src.id)}
                           disabled={healthChecking[src.id]}
                           className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-green-500/10 border border-green-500/20 text-green-400 hover:bg-green-500/20 transition-colors disabled:opacity-50"
                         >
-                          {healthChecking[src.id]
-                            ? <Loader className="w-3 h-3 animate-spin" />
-                            : <Activity className="w-3 h-3" />}
+                          {healthChecking[src.id] ? <Loader className="w-3 h-3 animate-spin" /> : <Activity className="w-3 h-3" />}
                           {healthChecking[src.id] ? 'Checking...' : 'Check Health'}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Tamil filter active banner */}
+                    {src.tamilFilter && src.status === 'success' && (
+                      <div className="mt-2 flex items-center gap-2 bg-orange-500/10 border border-orange-500/30 rounded-lg px-3 py-1.5">
+                        <Heart className="w-3.5 h-3.5 text-orange-400 fill-orange-400 shrink-0" />
+                        <span className="text-orange-300 text-xs font-medium">
+                          Tamil filter ON — playlist URL serves {src.tamilCount} Tamil channels only
+                        </span>
+                        <button
+                          onClick={() => toggleTamilFilter(src.id, false)}
+                          className="ml-auto text-orange-400/60 hover:text-orange-400 transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     )}
@@ -546,6 +560,20 @@ export default function SourcesTab() {
 
                 {/* Action buttons */}
                 <div className="flex items-center gap-1 shrink-0">
+                  {/* Zap = quick Tamil toggle shortcut (visible if has Tamil channels) */}
+                  {(src.tamilCount || 0) > 0 && (
+                    <button
+                      onClick={() => toggleTamilFilter(src.id, !src.tamilFilter)}
+                      title={src.tamilFilter ? 'Tamil filter ON' : 'Enable Tamil filter'}
+                      className={`p-2 rounded-lg transition-colors ${
+                        src.tamilFilter
+                          ? 'text-orange-400 bg-orange-500/10 hover:bg-orange-500/20'
+                          : 'text-gray-500 hover:text-orange-400 hover:bg-gray-700'
+                      }`}
+                    >
+                      <Zap className="w-4 h-4" />
+                    </button>
+                  )}
                   {src.url && (
                     <button
                       onClick={() => { loadSource(src.id); toast.success('🔄 Refreshing...'); }}
