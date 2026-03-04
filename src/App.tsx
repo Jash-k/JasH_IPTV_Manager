@@ -54,6 +54,25 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Auto-refresh sources on their configured interval ─────────────────────
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const { sources, loadSource } = useStore.getState();
+      sources.forEach(src => {
+        if (!src.autoRefresh || !src.refreshInterval || !src.url) return;
+        if (src.status === 'loading') return;
+        const lastMs  = src.lastRefreshed ? new Date(src.lastRefreshed).getTime() : 0;
+        const elapsed = Date.now() - lastMs;
+        const needed  = src.refreshInterval * 60 * 1000;
+        if (elapsed >= needed) {
+          console.log(`[AutoRefresh] Refreshing "${src.name}" (every ${src.refreshInterval}m)`);
+          loadSource(src.id);
+        }
+      });
+    }, 60_000); // check every minute
+    return () => clearInterval(timer);
+  }, []);
+
   const safeChannels  = Array.isArray(channels)  ? channels  : [];
   const safeSources   = Array.isArray(sources)   ? sources   : [];
   const safePlaylists = Array.isArray(playlists) ? playlists : [];

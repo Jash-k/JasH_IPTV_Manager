@@ -36,7 +36,8 @@ app.use(express.static(DIST_DIR));
 // ─────────────────────────────────────────────────────────────────────────────
 const EMPTY_DB = {
   sources: [], channels: [], groups: [],
-  playlists: [], settings: { apiKey: API_KEY },
+  playlists: [], modifications: null,
+  settings: { apiKey: API_KEY },
 };
 
 function loadDB() {
@@ -578,19 +579,32 @@ app.post('/api/sync', auth, (req, res) => {
         });
     }
 
-    DB = { ...EMPTY_DB, ...incoming };
+    // Preserve modifications (overlay/delta rules)
+    DB = {
+      ...EMPTY_DB,
+      ...incoming,
+      modifications: incoming.modifications || DB.modifications || null,
+    };
     saveDB(DB);
 
     const chs   = DB.channels || [];
     const tamil = chs.filter(c => isTamil(c));
+    const mods  = DB.modifications;
+    const modStats = mods ? {
+      removedRules  : (mods.removedChannels  || []).length,
+      overrideRules : (mods.channelOverrides || []).length,
+      groupRules    : (mods.groupRules       || []).length,
+      customChannels: (mods.customChannels   || []).length,
+    } : null;
 
     res.json({
-      success  : true,
-      channels : chs.length,
-      tamil    : tamil.length,
-      sources  : (DB.sources   || []).length,
-      drm      : 0,
-      message  : `Stored ${chs.length} channels — playlist uses exact source URLs`,
+      success      : true,
+      channels     : chs.length,
+      tamil        : tamil.length,
+      sources      : (DB.sources   || []).length,
+      drm          : 0,
+      modifications: modStats,
+      message      : `Stored ${chs.length} channels — playlist uses exact source URLs`,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -620,11 +634,12 @@ app.get('/api/db', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.json({
-    channels  : DB.channels  || [],
-    sources   : DB.sources   || [],
-    groups    : DB.groups    || [],
-    playlists : DB.playlists || [],
-    ts        : Date.now(),
+    channels      : DB.channels      || [],
+    sources       : DB.sources       || [],
+    groups        : DB.groups        || [],
+    playlists     : DB.playlists     || [],
+    modifications : DB.modifications || null,
+    ts            : Date.now(),
   });
 });
 

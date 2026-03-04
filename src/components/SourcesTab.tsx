@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import { Source } from '../types';
 import {
@@ -83,27 +83,7 @@ export default function SourcesTab() {
   const [healthChecking, setHealthChecking] = useState<Record<string, boolean>>({});
 
   const fileRef      = useRef<HTMLInputElement>(null);
-  const intervalRefs = useRef<Record<string, ReturnType<typeof setInterval>>>({});
-
-  // Auto-refresh intervals
-  useEffect(() => {
-    sources.forEach(src => {
-      if (src.autoRefresh && src.refreshInterval > 0 && src.url) {
-        if (!intervalRefs.current[src.id]) {
-          intervalRefs.current[src.id] = setInterval(
-            () => loadSource(src.id),
-            src.refreshInterval * 60 * 1000,
-          );
-        }
-      } else {
-        if (intervalRefs.current[src.id]) {
-          clearInterval(intervalRefs.current[src.id]);
-          delete intervalRefs.current[src.id];
-        }
-      }
-    });
-    return () => { Object.values(intervalRefs.current).forEach(clearInterval); };
-  }, [sources, loadSource]);
+  // Auto-refresh is handled globally in App.tsx
 
   const detectTypeFromUrl = (url: string): Source['type'] => {
     const u = url.toLowerCase();

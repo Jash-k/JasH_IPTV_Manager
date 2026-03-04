@@ -1,22 +1,31 @@
 /**
- * IPTV Manager Store — Supabase Persistence
+ * IPTV Manager Store — Overlay/Delta Architecture + Supabase Persistence
  *
- * Persistence layers (in priority order):
- *   1. Supabase (cloud DB — survives everything, no quota)
+ * KEY PRINCIPLE: Never modify source data directly.
+ * User modifications (deletions, renames, group removes) are stored as rules
+ * and re-applied every time a source refreshes.
+ *
+ * Persistence layers:
+ *   1. Supabase  (cloud DB — survives everything, no quota limit)
  *   2. Server /api/db (Render disk db.json — fallback)
- *   3. sessionStorage (in-memory tab session — last resort)
+ *   3. sessionStorage (in-tab session — last resort)
  *
- * On startup:
- *   - Load from Supabase → merge with server → display
- * On every change:
- *   - Debounced 2s → save to Supabase + server
+ * On startup : Load Supabase → merge with server → display
+ * On change  : Debounced 2s → save to Supabase + server
  */
 
-import { create } from 'zustand';
+import { create }    from 'zustand';
 import { Channel, Group, Source, PlaylistConfig, TabType } from '../types';
-import { parseAny, generateM3U, fetchSourceContent } from '../utils/parser';
-import { isTamilChannel } from '../utils/universalParser';
+import { parseAny, generateM3U, fetchSourceContent }       from '../utils/parser';
+import { isTamilChannel }                                  from '../utils/universalParser';
 import { saveToSupabase, loadFromSupabase, SUPABASE_ENABLED } from '../lib/supabase';
+import {
+  ModificationStore, EMPTY_MODS,
+  applyModifications,
+  makeRemovedRule, makeNonTamilRules,
+  makeGroupRemoveRule, makeGroupRenameRule,
+  GroupRule, ChannelOverride,
+} from '../utils/modifications';
 import { v4 as uuidv4 } from 'uuid';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -33,59 +42,55 @@ function normName(n: string) {
   return String(n || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
 }
 
-// ─── Session cache (in-tab fast restore) ──────────────────────────────────────
+// ─── Session cache ────────────────────────────────────────────────────────────
 function saveSession(data: object) {
-  try { sessionStorage.setItem('iptv_session', JSON.stringify(data)); } catch { /* ignore */ }
+  try { sessionStorage.setItem('iptv_session_v2', JSON.stringify(data)); } catch { /* ignore */ }
 }
 function loadSession(): Partial<AppState> | null {
   try {
-    const raw = sessionStorage.getItem('iptv_session');
+    const raw = sessionStorage.getItem('iptv_session_v2');
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
 
 // ─── Debounced save ───────────────────────────────────────────────────────────
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
-let serverSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let saveTimer  : ReturnType<typeof setTimeout> | null = null;
+let syncTimer  : ReturnType<typeof setTimeout> | null = null;
 
 function debouncedSave(state: AppState) {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     const payload = {
-      channels : state.channels,
-      sources  : state.sources,
-      groups   : state.groups,
-      playlists: state.playlists,
-      serverUrl: state.serverUrl,
-      apiKey   : state.apiKey,
-      savedAt  : Date.now(),
+      channels     : state.channels,
+      sources      : state.sources,
+      groups       : state.groups,
+      playlists    : state.playlists,
+      modifications: state.modifications,
+      serverUrl    : state.serverUrl,
+      apiKey       : state.apiKey,
+      savedAt      : Date.now(),
     };
 
-    // Save session immediately (in-tab restore)
+    // 1. Session storage (instant)
     saveSession(payload);
 
-    // Save to Supabase (cloud persistence)
+    // 2. Supabase (cloud)
     if (SUPABASE_ENABLED) {
-      await saveToSupabase(payload);
+      await saveToSupabase(payload).catch(() => {});
     }
 
-    // Sync to server (Render disk)
+    // 3. Server (Render disk) — extra 5s delay
     const url = state.serverUrl || DEFAULT_SERVER;
     if (url && !url.includes('localhost:517') && !url.includes('127.0.0.1')) {
-      if (serverSyncTimer) clearTimeout(serverSyncTimer);
-      serverSyncTimer = setTimeout(async () => {
-        try {
-          await fetch(`${url}/api/sync`, {
-            method : 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key'   : state.apiKey || 'iptv-secret',
-            },
-            body  : JSON.stringify(payload),
-            signal: AbortSignal.timeout(15000),
-          });
-        } catch { /* silent */ }
-      }, 5000); // extra 5s delay for server sync
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => {
+        fetch(`${url}/api/sync`, {
+          method : 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Api-Key': state.apiKey || 'iptv-secret' },
+          body   : JSON.stringify(payload),
+          signal : AbortSignal.timeout(15000),
+        }).catch(() => {});
+      }, 5000);
     }
   }, 2000);
 }
@@ -93,28 +98,52 @@ function debouncedSave(state: AppState) {
 // ─── Merge helpers ────────────────────────────────────────────────────────────
 function mergeById<T extends { id: string }>(local: T[], remote: T[]): T[] {
   const map = new Map<string, T>();
-  (remote || []).forEach(item => map.set(item.id, item)); // remote first
+  (remote || []).forEach(item => map.set(item.id, item));
   (local  || []).forEach(item => { if (!map.has(item.id)) map.set(item.id, item); });
   return Array.from(map.values());
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-export interface AppState {
-  channels          : Channel[];
-  groups            : Group[];
-  sources           : Source[];
-  playlists         : PlaylistConfig[];
-  activeTab         : TabType;
-  selectedGroup     : string | null;
-  showTamilOnly     : boolean;
-  tamilSourceFilter : boolean;
-  searchQuery       : string;
-  serverUrl         : string;
-  apiKey            : string;
-  lastSyncTime      : number;
-  hydrated          : boolean;
-  supabaseOk        : boolean;
+function mergeMods(local: ModificationStore, remote: ModificationStore): ModificationStore {
+  // Merge by key uniqueness
+  const removedMap = new Map<string, typeof local.removedChannels[0]>();
+  [...(remote.removedChannels || []), ...(local.removedChannels || [])].forEach(r => {
+    removedMap.set(`${r.matchType}:${r.channelKey}:${r.sourceId || '*'}`, r);
+  });
+  const overridesMap = new Map<string, ChannelOverride>();
+  [...(remote.channelOverrides || []), ...(local.channelOverrides || [])].forEach(o => {
+    overridesMap.set(`${o.matchType}:${o.channelKey}:${o.sourceId || '*'}`, o);
+  });
+  const groupRulesMap = new Map<string, GroupRule>();
+  [...(remote.groupRules || []), ...(local.groupRules || [])].forEach(g => {
+    groupRulesMap.set(g.id, g);
+  });
+  return {
+    removedChannels  : Array.from(removedMap.values()),
+    channelOverrides : Array.from(overridesMap.values()),
+    groupRules       : Array.from(groupRulesMap.values()),
+    customChannels   : mergeById(local.customChannels || [], remote.customChannels || []) as typeof local.customChannels,
+  };
+}
 
+// ─── Store types ──────────────────────────────────────────────────────────────
+export interface AppState {
+  channels      : Channel[];
+  groups        : Group[];
+  sources       : Source[];
+  playlists     : PlaylistConfig[];
+  modifications : ModificationStore;
+  activeTab     : TabType;
+  selectedGroup : string | null;
+  showTamilOnly : boolean;
+  tamilSourceFilter: boolean;
+  searchQuery   : string;
+  serverUrl     : string;
+  apiKey        : string;
+  lastSyncTime  : number;
+  hydrated      : boolean;
+  supabaseOk    : boolean;
+
+  // Settings
   setActiveTab         : (tab: TabType)         => void;
   setSelectedGroup     : (group: string | null) => void;
   setShowTamilOnly     : (v: boolean)           => void;
@@ -124,15 +153,18 @@ export interface AppState {
   setApiKey            : (key: string)          => void;
   setHydrated          : (v: boolean)           => void;
 
-  getSourceChannels      : (sourceId: string, tamilOnly?: boolean) => Channel[];
+  // Queries
   getFilteredChannels    : () => Channel[];
+  getSourceChannels      : (sourceId: string, tamilOnly?: boolean) => Channel[];
   getMultiSourceChannels : () => Array<{ name: string; channels: Channel[] }>;
 
+  // Sources
   addSource    : (source: Omit<Source, 'id' | 'status'>) => void;
   updateSource : (id: string, updates: Partial<Source>)  => void;
   deleteSource : (id: string)                            => void;
   loadSource   : (id: string)                            => Promise<void>;
 
+  // Channels CRUD
   addChannel         : (channel: Omit<Channel, 'id'>)          => void;
   updateChannel      : (id: string, updates: Partial<Channel>) => void;
   deleteChannel      : (id: string)                            => void;
@@ -140,61 +172,73 @@ export interface AppState {
   reorderChannels    : (fromIdx: number, toIdx: number)        => void;
   moveChannelToGroup : (channelId: string, groupName: string)  => void;
 
+  // Groups CRUD
   addGroup    : (group: Omit<Group, 'id'>)            => void;
   updateGroup : (id: string, updates: Partial<Group>) => void;
   deleteGroup : (id: string)                          => void;
   toggleGroup : (id: string)                          => void;
 
+  // Playlists
   createPlaylist : (name: string, includeGroups: string[], tamilOnly?: boolean) => PlaylistConfig;
   updatePlaylist : (id: string, updates: Partial<PlaylistConfig>)                => void;
   deletePlaylist : (id: string)                                                  => void;
   getPlaylistM3U : (id: string)                                                  => string;
 
+  // Modification rules (overlay/delta)
+  addRemovedRule   : (rule: ModificationStore['removedChannels'][0])  => void;
+  addOverrideRule  : (rule: ChannelOverride)                          => void;
+  addGroupRule     : (rule: GroupRule)                                => void;
+  removeGroupRule  : (id: string)                                     => void;
+  clearModsForSource : (sourceId: string)                             => void;
+
+  // Helpers
   pruneEmptyGroups         : () => void;
   removeNonTamilFromSource : (sourceId: string) => number;
   syncGroups               : () => void;
   tagMultiSourceChannels   : () => void;
   exportDB                 : () => string;
 
-  syncToServer   : () => Promise<void>;
-  syncDB         : () => void;
-  loadFromServer : (serverUrl?: string) => Promise<void>;
-  initFromStorage: () => Promise<void>;
+  // Persistence
+  syncDB          : () => void;
+  syncToServer    : () => Promise<void>;
+  loadFromServer  : (url?: string) => Promise<void>;
+  initFromStorage : () => Promise<void>;
 }
 
-// ─── Store ─────────────────────────────────────────────────────────────────────
+// ─── Store ────────────────────────────────────────────────────────────────────
 export const useStore = create<AppState>()((set, get) => ({
-  channels          : [],
-  groups            : [],
-  sources           : [],
-  playlists         : [],
-  activeTab         : 'sources' as TabType,
-  selectedGroup     : null,
-  showTamilOnly     : false,
-  tamilSourceFilter : false,
-  searchQuery       : '',
-  serverUrl         : DEFAULT_SERVER,
-  apiKey            : 'iptv-secret',
-  lastSyncTime      : 0,
-  hydrated          : false,
-  supabaseOk        : SUPABASE_ENABLED,
+  channels      : [],
+  groups        : [],
+  sources       : [],
+  playlists     : [],
+  modifications : { ...EMPTY_MODS },
+  activeTab     : 'sources' as TabType,
+  selectedGroup : null,
+  showTamilOnly : false,
+  tamilSourceFilter: false,
+  searchQuery   : '',
+  serverUrl     : DEFAULT_SERVER,
+  apiKey        : 'iptv-secret',
+  lastSyncTime  : 0,
+  hydrated      : false,
+  supabaseOk    : SUPABASE_ENABLED,
 
-  setActiveTab         : (tab)   => set({ activeTab: tab }),
-  setSelectedGroup     : (group) => set({ selectedGroup: group }),
-  setShowTamilOnly     : (v)     => set({ showTamilOnly: v }),
-  setTamilSourceFilter : (v)     => set({ tamilSourceFilter: v }),
-  setSearchQuery       : (q)     => set({ searchQuery: q }),
-  setServerUrl         : (url)   => { set({ serverUrl: url }); get().syncDB(); },
-  setApiKey            : (key)   => { set({ apiKey: key });    get().syncDB(); },
-  setHydrated          : (v)     => set({ hydrated: v }),
+  // ── Settings ────────────────────────────────────────────────────────────────
+  setActiveTab         : tab   => set({ activeTab: tab }),
+  setSelectedGroup     : group => set({ selectedGroup: group }),
+  setShowTamilOnly     : v     => set({ showTamilOnly: v }),
+  setTamilSourceFilter : v     => set({ tamilSourceFilter: v }),
+  setSearchQuery       : q     => set({ searchQuery: q }),
+  setServerUrl         : url   => { set({ serverUrl: url }); get().syncDB(); },
+  setApiKey            : key   => { set({ apiKey: key });    get().syncDB(); },
+  setHydrated          : v     => set({ hydrated: v }),
 
-  // ── Source channel helpers ──────────────────────────────────────────────────
+  // ── Queries ─────────────────────────────────────────────────────────────────
   getSourceChannels: (sourceId, tamilOnly = false) =>
     get().channels.filter(ch =>
-      ch.sourceId === sourceId && (tamilOnly ? ch.isTamil : true)
+      ch.sourceId === sourceId && (tamilOnly ? !!ch.isTamil : true)
     ),
 
-  // ── Multi-source grouping ───────────────────────────────────────────────────
   getMultiSourceChannels: () => {
     const { channels } = get();
     const byName: Record<string, Channel[]> = {};
@@ -208,8 +252,34 @@ export const useStore = create<AppState>()((set, get) => ({
       .map(([, chs]) => ({ name: chs[0].name, channels: chs }));
   },
 
-  // ── Sources ─────────────────────────────────────────────────────────────────
-  addSource: (source) => {
+  // ── Filtered channel view ────────────────────────────────────────────────────
+  getFilteredChannels: () => {
+    const { channels, groups, selectedGroup, showTamilOnly, searchQuery } = get();
+    const sv = (v: unknown) =>
+      (typeof v === 'string' ? v : String(v ?? '')).toLowerCase();
+
+    let filtered = [...channels];
+    if (selectedGroup)  filtered = filtered.filter(ch => ch.group === selectedGroup);
+    if (showTamilOnly)  filtered = filtered.filter(ch => !!ch.isTamil);
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter(ch =>
+        sv(ch.name).includes(q)     ||
+        sv(ch.group).includes(q)    ||
+        sv(ch.tvgId).includes(q)    ||
+        sv(ch.language).includes(q) ||
+        sv(ch.tvgName).includes(q)
+      );
+    }
+    const activeGroupNames = new Set(groups.filter(g => g.isActive).map(g => g.name));
+    filtered = filtered.filter(
+      ch => activeGroupNames.has(ch.group) || !groups.find(g => g.name === ch.group)
+    );
+    return filtered.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  },
+
+  // ── Sources ──────────────────────────────────────────────────────────────────
+  addSource: source => {
     const newSource: Source = { ...source, id: uuidv4(), status: 'idle' };
     set(s => ({ sources: [...s.sources, newSource] }));
     get().loadSource(newSource.id);
@@ -221,18 +291,30 @@ export const useStore = create<AppState>()((set, get) => ({
     }));
   },
 
-  deleteSource: (id) => {
+  deleteSource: id => {
     set(s => ({
       sources  : s.sources.filter(src => src.id !== id),
       channels : s.channels.filter(ch  => ch.sourceId !== id),
     }));
+    // Clear modification rules for this source
+    get().clearModsForSource(id);
     get().pruneEmptyGroups();
     get().syncDB();
   },
 
-  loadSource: async (id) => {
-    const state  = get();
-    const source = state.sources.find(s => s.id === id);
+  /**
+   * loadSource — CORE of the overlay architecture
+   *
+   * Flow:
+   *   1. Fetch + parse raw channels from source URL/content
+   *   2. Strip DRM channels
+   *   3. Apply tamilFilter (source-level)
+   *   4. Apply ALL modification rules (removedChannels, overrides, groupRules)
+   *   5. Merge result into store (replace this source, keep others)
+   *   6. Persist
+   */
+  loadSource: async id => {
+    const source = get().sources.find(s => s.id === id);
     if (!source) return;
 
     get().updateSource(id, { status: 'loading' });
@@ -243,80 +325,75 @@ export const useStore = create<AppState>()((set, get) => ({
       else if (source.url) content = await fetchSourceContent(source.url);
       else throw new Error('No URL or content provided');
 
+      // ── Parse raw ───────────────────────────────────────────────────────────
       const parsed = parseAny(content, id) as Array<Channel & Record<string, unknown>>;
-      const directChannels = parsed.filter(ch => !hasDRM(ch));
-      const drmCount       = parsed.length - directChannels.length;
+      const directRaw  = parsed.filter(ch => !hasDRM(ch));
+      const drmCount   = parsed.length - directRaw.length;
 
-      // Apply source memory (blocked channels, tamil filter)
-      const blocked = new Set([
-        ...(source.blockedChannelIds   || []),
-        ...(source.blockedChannelNames || []).map((n: string) => n.toLowerCase()),
-      ]);
+      // ── Map to Channel objects ───────────────────────────────────────────────
+      let rawChannels: Channel[] = directRaw.map((ch, idx) => ({
+        id         : ch.id || uuidv4(),
+        name       : String(ch.name  || 'Unknown'),
+        url        : ch.url    || '',
+        rawUrl     : ch.rawUrl || ch.url || '',
+        logo       : ch.logo,
+        group      : String(ch.group || 'General'),
+        tvgId      : ch.tvgId,
+        tvgName    : ch.tvgName,
+        language   : ch.language,
+        country    : ch.country,
+        isActive   : true,
+        enabled    : true,
+        order      : ch.order ?? idx,
+        sourceId   : id,
+        tags       : ch.tags,
+        streamType : ch.streamType,
+        userAgent  : ch.userAgent,
+        referer    : ch.referer,
+        cookie     : ch.cookie,
+        httpHeaders: ch.httpHeaders,
+        isTamil    : isTamilChannel(
+          String(ch.name     || ''),
+          String(ch.group    || ''),
+          String(ch.language || ''),
+        ),
+      }));
 
-      const taggedChannels: Channel[] = directChannels
-        .filter(ch => {
-          if (blocked.has(ch.id)) return false;
-          if (blocked.has(String(ch.name || '').toLowerCase())) return false;
-          if (source.removedOthers && !isTamilChannel(
-            String(ch.name || ''), String(ch.group || ''), String(ch.language || '')
-          )) return false;
-          if (source.tamilFilter && !isTamilChannel(
-            String(ch.name || ''), String(ch.group || ''), String(ch.language || '')
-          )) return false;
-          return true;
-        })
-        .map(ch => ({
-          id          : ch.id,
-          name        : ch.name,
-          url         : ch.url,
-          rawUrl      : ch.rawUrl,
-          logo        : ch.logo,
-          group       : ch.group || 'General',
-          tvgId       : ch.tvgId,
-          tvgName     : ch.tvgName,
-          language    : ch.language,
-          country     : ch.country,
-          isActive    : true,
-          enabled     : true,
-          order       : ch.order ?? 0,
-          sourceId    : id,
-          tags        : ch.tags,
-          streamType  : ch.streamType,
-          userAgent   : ch.userAgent,
-          referer     : ch.referer,
-          cookie      : ch.cookie,
-          httpHeaders : ch.httpHeaders,
-          isTamil     : isTamilChannel(
-            String(ch.name     || ''),
-            String(ch.group    || ''),
-            String(ch.language || '')
-          ),
-          healthStatus: 'unknown' as const,
-        }));
+      // ── Apply source-level Tamil filter ─────────────────────────────────────
+      if (source.tamilFilter) {
+        rawChannels = rawChannels.filter(ch => ch.isTamil);
+      }
 
-      const tamilCount = taggedChannels.filter(ch => ch.isTamil).length;
+      // ── Apply modifications overlay ──────────────────────────────────────────
+      // This is the KEY step — re-applies ALL persistent rules on fresh data
+      const mods     = get().modifications;
+      const filtered = applyModifications(rawChannels, mods, id);
 
-      // MERGE: keep channels from OTHER sources, replace THIS source's channels
+      const tamilCount = filtered.filter(ch => ch.isTamil).length;
+
+      // ── Merge into store (replace this source only) ─────────────────────────
       set(s => ({
         channels: [
-          ...s.channels.filter(ch => ch.sourceId !== id),
-          ...taggedChannels,
+          ...s.channels.filter(ch => ch.sourceId !== id),  // keep other sources
+          ...filtered,                                       // add fresh filtered channels
         ],
       }));
 
       get().updateSource(id, {
-        status        : 'success',
-        lastRefreshed : new Date().toISOString(),
-        channelCount  : taggedChannels.length,
+        status       : 'success',
+        lastRefreshed: new Date().toISOString(),
+        channelCount : filtered.length,
         tamilCount,
-        errorMessage  : drmCount > 0
-          ? `✅ ${taggedChannels.length} direct channels. ${drmCount} DRM removed.`
+        removedCount : rawChannels.length - filtered.length,
+        errorMessage : drmCount > 0
+          ? `✅ ${filtered.length} channels. ${drmCount} DRM removed.`
           : undefined,
       });
 
       get().syncGroups();
       get().tagMultiSourceChannels();
       get().syncDB();
+
     } catch (err) {
       get().updateSource(id, {
         status      : 'error',
@@ -325,7 +402,7 @@ export const useStore = create<AppState>()((set, get) => ({
     }
   },
 
-  // ── Tag multi-source channels ───────────────────────────────────────────────
+  // ── Tag multi-source channels ────────────────────────────────────────────────
   tagMultiSourceChannels: () => {
     const { channels, sources } = get();
     const byName: Record<string, Channel[]> = {};
@@ -347,7 +424,7 @@ export const useStore = create<AppState>()((set, get) => ({
           channelId : c.id,
           sourceId  : c.sourceId,
           sourceName: sources.find(s => s.id === c.sourceId)?.name || c.sourceId,
-          url       : c.url,
+          url       : c.rawUrl || c.url,
           status    : 'unknown' as const,
         })),
       };
@@ -355,16 +432,17 @@ export const useStore = create<AppState>()((set, get) => ({
     set({ channels: updated });
   },
 
-  // ── Channels CRUD ───────────────────────────────────────────────────────────
-  addChannel: (channel) => {
+  // ── Channels CRUD ────────────────────────────────────────────────────────────
+  addChannel: channel => {
     const newCh: Channel = {
       ...channel,
-      id     : uuidv4(),
-      group  : channel.group || 'General',
-      isTamil: isTamilChannel(
+      id      : uuidv4(),
+      group   : channel.group || 'General',
+      isCustom: channel.sourceId === 'custom' || !channel.sourceId ? true : undefined,
+      isTamil : isTamilChannel(
         String(channel.name     || ''),
         String(channel.group    || ''),
-        String(channel.language || '')
+        String(channel.language || ''),
       ),
     };
     set(s => ({ channels: [...s.channels, newCh] }));
@@ -384,57 +462,157 @@ export const useStore = create<AppState>()((set, get) => ({
           isTamil: isTamilChannel(
             String(updated.name     || ''),
             String(updated.group    || ''),
-            String(updated.language || '')
+            String(updated.language || ''),
           ),
         };
       }),
     }));
+
+    // If name/group changed, add an override rule so it persists after source refresh
+    const ch = get().channels.find(c => c.id === id);
+    if (ch && ch.sourceId && ch.sourceId !== 'custom') {
+      if (updates.name || updates.group || updates.logo || updates.url) {
+        get().addOverrideRule({
+          channelKey    : ch.name.toLowerCase().trim(),
+          matchType     : 'exact_name',
+          sourceId      : ch.sourceId,
+          overrideName  : updates.name,
+          overrideGroup : updates.group,
+          overrideLogo  : updates.logo,
+          overrideUrl   : updates.url,
+        });
+      }
+    }
+
     get().syncGroups();
     get().pruneEmptyGroups();
     get().syncDB();
   },
 
-  deleteChannel: (id) => {
+  /**
+   * deleteChannel — stores a persistent removal rule so it survives refreshes
+   */
+  deleteChannel: id => {
     const ch = get().channels.find(c => c.id === id);
-    if (ch?.sourceId) {
-      const src = get().sources.find(s => s.id === ch.sourceId);
-      if (src) {
-        get().updateSource(ch.sourceId, {
-          blockedChannelIds  : [...(src.blockedChannelIds   || []), id],
-          blockedChannelNames: [...(src.blockedChannelNames || []),
-            String(ch.name || '').toLowerCase()],
-        });
-      }
+    if (ch && ch.sourceId && ch.sourceId !== 'custom') {
+      // Add persistent removal rules (by name + by URL)
+      const rules = makeRemovedRule(ch, 'manual_delete', ch.sourceId);
+      set(s => ({
+        modifications: {
+          ...s.modifications,
+          removedChannels: [
+            ...s.modifications.removedChannels,
+            ...rules.filter(r =>
+              !s.modifications.removedChannels.find(
+                x => x.channelKey === r.channelKey && x.matchType === r.matchType
+              )
+            ),
+          ],
+        },
+      }));
     }
     set(s => ({ channels: s.channels.filter(c => c.id !== id) }));
     get().pruneEmptyGroups();
     get().syncDB();
   },
 
-  removeNonTamilFromSource: (sourceId) => {
-    const { channels } = get();
+  /**
+   * removeNonTamilFromSource — removes all non-Tamil channels AND
+   * stores persistent rules so they never come back on refresh
+   */
+  removeNonTamilFromSource: sourceId => {
+    const { channels, modifications } = get();
     const toRemove = channels.filter(ch => ch.sourceId === sourceId && !ch.isTamil);
-    const removedNames = toRemove.map(ch => String(ch.name || '').toLowerCase());
-    const removedIds   = toRemove.map(ch => ch.id);
 
-    const src = get().sources.find(s => s.id === sourceId);
-    if (src) {
-      get().updateSource(sourceId, {
-        removedOthers      : true,
-        blockedChannelIds  : [...(src.blockedChannelIds   || []), ...removedIds],
-        blockedChannelNames: [...(src.blockedChannelNames || []), ...removedNames],
-      });
-    }
+    // Create removal rules for all non-Tamil channels
+    const rules = makeNonTamilRules(channels, sourceId);
+    const existing = new Set(
+      modifications.removedChannels.map(r => `${r.matchType}:${r.channelKey}:${r.sourceId || '*'}`)
+    );
+    const newRules = rules.filter(
+      r => !existing.has(`${r.matchType}:${r.channelKey}:${r.sourceId || '*'}`)
+    );
 
     set(s => ({
       channels: s.channels.filter(ch => !(ch.sourceId === sourceId && !ch.isTamil)),
+      modifications: {
+        ...s.modifications,
+        removedChannels: [...s.modifications.removedChannels, ...newRules],
+      },
     }));
+
+    get().updateSource(sourceId, { removedOthers: true });
     get().pruneEmptyGroups();
     get().syncDB();
     return toRemove.length;
   },
 
-  // ── Auto-delete empty groups ─────────────────────────────────────────────────
+  // ── Modification rules ────────────────────────────────────────────────────────
+  addRemovedRule: rule => {
+    set(s => ({
+      modifications: {
+        ...s.modifications,
+        removedChannels: [
+          ...s.modifications.removedChannels.filter(
+            r => !(r.channelKey === rule.channelKey && r.matchType === rule.matchType && r.sourceId === rule.sourceId)
+          ),
+          rule,
+        ],
+      },
+    }));
+    get().syncDB();
+  },
+
+  addOverrideRule: rule => {
+    set(s => ({
+      modifications: {
+        ...s.modifications,
+        channelOverrides: [
+          ...s.modifications.channelOverrides.filter(
+            o => !(o.channelKey === rule.channelKey && o.matchType === rule.matchType && o.sourceId === rule.sourceId)
+          ),
+          rule,
+        ],
+      },
+    }));
+    get().syncDB();
+  },
+
+  addGroupRule: rule => {
+    set(s => ({
+      modifications: {
+        ...s.modifications,
+        groupRules: [
+          ...s.modifications.groupRules.filter(r => r.id !== rule.id),
+          rule,
+        ],
+      },
+    }));
+    get().syncDB();
+  },
+
+  removeGroupRule: id => {
+    set(s => ({
+      modifications: {
+        ...s.modifications,
+        groupRules: s.modifications.groupRules.filter(r => r.id !== id),
+      },
+    }));
+    get().syncDB();
+  },
+
+  clearModsForSource: sourceId => {
+    set(s => ({
+      modifications: {
+        ...s.modifications,
+        removedChannels : s.modifications.removedChannels.filter(r => r.sourceId !== sourceId),
+        channelOverrides: s.modifications.channelOverrides.filter(o => o.sourceId !== sourceId),
+        groupRules      : s.modifications.groupRules.filter(r => r.sourceId !== sourceId),
+      },
+    }));
+  },
+
+  // ── Auto-delete empty groups ───────────────────────────────────────────────────
   pruneEmptyGroups: () => {
     const { channels, groups } = get();
     const usedGroups = new Set(channels.map(ch => ss(ch.group) || 'General').filter(Boolean));
@@ -442,7 +620,7 @@ export const useStore = create<AppState>()((set, get) => ({
     if (pruned.length !== groups.length) set({ groups: pruned });
   },
 
-  toggleChannel: (id) => {
+  toggleChannel: id => {
     set(s => ({
       channels: s.channels.map(ch =>
         ch.id === id ? { ...ch, isActive: !ch.isActive } : ch
@@ -472,8 +650,8 @@ export const useStore = create<AppState>()((set, get) => ({
     get().syncDB();
   },
 
-  // ── Groups CRUD ─────────────────────────────────────────────────────────────
-  addGroup: (group) => {
+  // ── Groups CRUD ───────────────────────────────────────────────────────────────
+  addGroup: group => {
     const newGroup: Group = { ...group, id: uuidv4() };
     set(s => ({ groups: [...s.groups, newGroup] }));
     get().syncDB();
@@ -485,27 +663,39 @@ export const useStore = create<AppState>()((set, get) => ({
       groups: s.groups.map(g => g.id === id ? { ...g, ...updates } : g),
     }));
     if (old && updates.name && old.name !== updates.name) {
+      // Update channels to use new group name
       set(s => ({
         channels: s.channels.map(ch =>
           ch.group === old.name ? { ...ch, group: updates.name! } : ch
         ),
       }));
+      // Add a group rename rule so it persists after source refresh
+      const ruleId = uuidv4();
+      get().addGroupRule(makeGroupRenameRule(old.name, updates.name, ruleId));
     }
     get().syncDB();
   },
 
-  // Delete group AND all its channels — no Uncategorized fallback
-  deleteGroup: (id) => {
+  /**
+   * deleteGroup — permanently removes group AND all its channels.
+   * Adds a group remove rule so refreshed sources never re-create it.
+   */
+  deleteGroup: id => {
     const grp = get().groups.find(g => g.id === id);
     if (!grp) return;
+
     set(s => ({
       groups  : s.groups.filter(g => g.id !== id),
       channels: s.channels.filter(ch => ch.group !== grp.name),
     }));
+
+    // Persistent rule: never show this group again after source refresh
+    const ruleId = uuidv4();
+    get().addGroupRule(makeGroupRemoveRule(grp.name, ruleId));
     get().syncDB();
   },
 
-  toggleGroup: (id) => {
+  toggleGroup: id => {
     set(s => ({
       groups: s.groups.map(g =>
         g.id === id ? { ...g, isActive: !g.isActive } : g
@@ -514,7 +704,7 @@ export const useStore = create<AppState>()((set, get) => ({
     get().syncDB();
   },
 
-  // ── Auto-sync groups from channel data ──────────────────────────────────────
+  // ── Auto-sync groups from channel data ────────────────────────────────────────
   syncGroups: () => {
     const { channels, groups } = get();
     const groupNames    = [...new Set(channels.map(ch => ss(ch.group) || 'General').filter(Boolean))];
@@ -540,7 +730,7 @@ export const useStore = create<AppState>()((set, get) => ({
       groups: s.groups.map(g => ({
         ...g,
         channelCount: s.channels.filter(ch => ss(ch.group) === g.name).length,
-        isTamil:
+        isTamil     :
           g.isTamil ||
           g.name.toLowerCase().includes('tamil') ||
           s.channels.filter(ch => ss(ch.group) === g.name).some(ch => ch.isTamil),
@@ -550,11 +740,10 @@ export const useStore = create<AppState>()((set, get) => ({
     get().pruneEmptyGroups();
   },
 
-  // ── Playlists ───────────────────────────────────────────────────────────────
+  // ── Playlists ─────────────────────────────────────────────────────────────────
   createPlaylist: (name, includeGroups, tamilOnly = false) => {
-    const id       = uuidv4();
-    const { serverUrl } = get();
-    const base     = (serverUrl || DEFAULT_SERVER) + '/api/playlist';
+    const id   = uuidv4();
+    const base = (get().serverUrl || DEFAULT_SERVER) + '/api/playlist';
     const playlist: PlaylistConfig = {
       id,
       name,
@@ -575,20 +764,18 @@ export const useStore = create<AppState>()((set, get) => ({
   updatePlaylist: (id, updates) => {
     set(s => ({
       playlists: s.playlists.map(p =>
-        p.id === id
-          ? { ...p, ...updates, updatedAt: new Date().toISOString() }
-          : p
+        p.id === id ? { ...p, ...updates, updatedAt: new Date().toISOString() } : p
       ),
     }));
     get().syncDB();
   },
 
-  deletePlaylist: (id) => {
+  deletePlaylist: id => {
     set(s => ({ playlists: s.playlists.filter(p => p.id !== id) }));
     get().syncDB();
   },
 
-  getPlaylistM3U: (id) => {
+  getPlaylistM3U: id => {
     const { playlists, channels, serverUrl } = get();
     const playlist = playlists.find(p => p.id === id);
     if (!playlist) return '';
@@ -599,7 +786,7 @@ export const useStore = create<AppState>()((set, get) => ({
       if (pinned.has(ch.id))  return true;
       if (!ch.isActive)       return false;
       if (playlist.tamilOnly && !ch.isTamil)                              return false;
-      if (playlist.includeGroups.length &&
+      if (playlist.includeGroups.length > 0 &&
           !playlist.includeGroups.includes(ch.group))                     return false;
       if (playlist.excludeGroups.includes(ch.group))                      return false;
       return true;
@@ -613,92 +800,59 @@ export const useStore = create<AppState>()((set, get) => ({
     return generateM3U(filtered, serverUrl || DEFAULT_SERVER);
   },
 
-  // ── Filtered channel view ───────────────────────────────────────────────────
-  getFilteredChannels: () => {
-    const { channels, groups, selectedGroup, showTamilOnly, searchQuery } = get();
-    const sv = (v: unknown) =>
-      (typeof v === 'string' ? v : String(v ?? '')).toLowerCase();
-    let filtered = [...channels];
-    if (selectedGroup) filtered = filtered.filter(ch => ch.group === selectedGroup);
-    if (showTamilOnly) filtered = filtered.filter(ch => ch.isTamil);
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(ch =>
-        sv(ch.name).includes(q)     ||
-        sv(ch.group).includes(q)    ||
-        sv(ch.tvgId).includes(q)    ||
-        sv(ch.language).includes(q) ||
-        sv(ch.tvgName).includes(q)
-      );
-    }
-    const activeGroupNames = new Set(
-      groups.filter(g => g.isActive).map(g => g.name)
-    );
-    filtered = filtered.filter(
-      ch => activeGroupNames.has(ch.group) || !groups.find(g => g.name === ch.group)
-    );
-    return filtered.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  },
-
-  // ── DB export ───────────────────────────────────────────────────────────────
+  // ── Export ───────────────────────────────────────────────────────────────────
   exportDB: () => {
-    const { channels, playlists, sources, groups } = get();
-    return JSON.stringify({ channels, playlists, sources, groups }, null, 2);
+    const { channels, playlists, sources, groups, modifications } = get();
+    return JSON.stringify({ channels, playlists, sources, groups, modifications }, null, 2);
   },
 
-  // ── syncDB — debounced save to Supabase + server ────────────────────────────
-  syncDB: () => {
-    debouncedSave(get());
-  },
+  // ── Persistence ───────────────────────────────────────────────────────────────
+  syncDB: () => { debouncedSave(get()); },
 
-  // ── Manual sync to server ───────────────────────────────────────────────────
   syncToServer: async () => {
-    const { channels, playlists, sources, groups, serverUrl, apiKey } = get();
-    const url = serverUrl || DEFAULT_SERVER;
+    const { channels, playlists, sources, groups, modifications, serverUrl, apiKey } = get();
+    const url  = serverUrl || DEFAULT_SERVER;
     const resp = await fetch(`${url}/api/sync`, {
       method : 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key'   : apiKey || 'iptv-secret',
-      },
-      body: JSON.stringify({ channels, playlists, sources, groups }),
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey || 'iptv-secret' },
+      body   : JSON.stringify({ channels, playlists, sources, groups, modifications }),
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ error: resp.statusText }));
       throw new Error(`Server sync failed: ${(err as { error: string }).error || resp.status}`);
     }
     set({ lastSyncTime: Date.now() });
-
-    // Also save to Supabase immediately
     if (SUPABASE_ENABLED) {
       await saveToSupabase({
-        channels, sources, groups, playlists,
+        channels, sources, groups, playlists, modifications,
         serverUrl, apiKey, savedAt: Date.now(),
-      });
+      }).catch(() => {});
     }
   },
 
-  // ── initFromStorage — called on app startup ─────────────────────────────────
-  // Priority: Supabase → Server → sessionStorage
+  /**
+   * initFromStorage — app startup
+   * Priority: Supabase → sessionStorage → server
+   */
   initFromStorage: async () => {
-    // 1. Try Supabase first (cloud, most reliable)
+    // 1. Try Supabase (cloud, most reliable)
     if (SUPABASE_ENABLED) {
       try {
         const sb = await loadFromSupabase();
-        if (sb && sb.channels.length > 0) {
+        if (sb && Array.isArray(sb.channels) && sb.channels.length > 0) {
           set({
-            channels : sb.channels  as Channel[],
-            sources  : sb.sources   as Source[],
-            groups   : sb.groups    as Group[],
-            playlists: sb.playlists as PlaylistConfig[],
-            serverUrl: sb.serverUrl || DEFAULT_SERVER,
-            apiKey   : sb.apiKey    || 'iptv-secret',
-            hydrated : true,
+            channels     : sb.channels   as Channel[],
+            sources      : sb.sources    as Source[],
+            groups       : sb.groups     as Group[],
+            playlists    : sb.playlists  as PlaylistConfig[],
+            modifications: (sb as { modifications?: ModificationStore }).modifications || { ...EMPTY_MODS },
+            serverUrl    : (sb.serverUrl as string) || DEFAULT_SERVER,
+            apiKey       : (sb.apiKey   as string) || 'iptv-secret',
+            hydrated     : true,
           });
-          console.log(`[Store] Loaded ${sb.channels.length} channels from Supabase`);
-
-          // Also try to merge with server data
-          void get().loadFromServer(sb.serverUrl || DEFAULT_SERVER);
+          console.log(`[Store] ✅ Supabase: ${sb.channels.length} channels`);
+          // Merge with server in background
+          void get().loadFromServer((sb.serverUrl as string) || DEFAULT_SERVER);
           return;
         }
       } catch (e) {
@@ -706,26 +860,29 @@ export const useStore = create<AppState>()((set, get) => ({
       }
     }
 
-    // 2. Try session storage (in-tab fast restore)
+    // 2. Try sessionStorage (instant, in-tab)
     const session = loadSession();
     if (session && Array.isArray(session.channels) && session.channels.length > 0) {
       set({
-        channels : session.channels,
-        sources  : session.sources  || [],
-        groups   : session.groups   || [],
-        playlists: session.playlists || [],
-        serverUrl: session.serverUrl || DEFAULT_SERVER,
-        apiKey   : session.apiKey   || 'iptv-secret',
-        hydrated : true,
+        channels     : session.channels,
+        sources      : session.sources   || [],
+        groups       : session.groups    || [],
+        playlists    : session.playlists || [],
+        modifications: session.modifications || { ...EMPTY_MODS },
+        serverUrl    : session.serverUrl  || DEFAULT_SERVER,
+        apiKey       : session.apiKey     || 'iptv-secret',
+        hydrated     : true,
       });
-      console.log(`[Store] Restored ${session.channels.length} channels from session`);
+      console.log(`[Store] ✅ Session: ${session.channels.length} channels`);
     }
 
     // 3. Always try server (may have newer data)
     await get().loadFromServer(get().serverUrl || DEFAULT_SERVER);
   },
 
-  // ── Load from server + merge ─────────────────────────────────────────────────
+  /**
+   * loadFromServer — fetch /api/db and merge with local state
+   */
   loadFromServer: async (overrideUrl?: string) => {
     const url = overrideUrl || get().serverUrl || DEFAULT_SERVER;
     if (!url || url.includes('localhost:517') || url.includes('127.0.0.1')) {
@@ -738,54 +895,56 @@ export const useStore = create<AppState>()((set, get) => ({
         headers: { 'X-Api-Key': get().apiKey || 'iptv-secret' },
         signal : AbortSignal.timeout(12000),
       });
-
       if (!resp.ok) { set({ hydrated: true }); return; }
 
       const serverData = await resp.json() as {
-        channels?: unknown[];
-        sources?: unknown[];
-        groups?: unknown[];
-        playlists?: unknown[];
+        channels     ?: unknown[];
+        sources      ?: unknown[];
+        groups       ?: unknown[];
+        playlists    ?: unknown[];
+        modifications?: ModificationStore;
       };
+
       const local = get();
 
-      const mergedChannels  = mergeById(local.channels,  (serverData.channels  || []) as Channel[]);
-      const mergedSources   = mergeById(local.sources,   (serverData.sources   || []) as Source[]);
-      const mergedGroups    = mergeById(local.groups,    (serverData.groups    || []) as Group[]);
-      const mergedPlaylists = mergeById(local.playlists, (serverData.playlists || []) as PlaylistConfig[]);
+      const mergedChannels   = mergeById(local.channels,  (serverData.channels  || []) as Channel[]);
+      const mergedSources    = mergeById(local.sources,   (serverData.sources   || []) as Source[]);
+      const mergedGroups     = mergeById(local.groups,    (serverData.groups    || []) as Group[]);
+      const mergedPlaylists  = mergeById(local.playlists, (serverData.playlists || []) as PlaylistConfig[]);
+      const mergedMods       = mergeMods(
+        local.modifications,
+        serverData.modifications || { ...EMPTY_MODS }
+      );
 
       set({
-        channels  : mergedChannels,
-        sources   : mergedSources,
-        groups    : mergedGroups,
-        playlists : mergedPlaylists,
-        hydrated  : true,
+        channels     : mergedChannels,
+        sources      : mergedSources,
+        groups       : mergedGroups,
+        playlists    : mergedPlaylists,
+        modifications: mergedMods,
+        hydrated     : true,
       });
 
-      console.log(`[Store] Merged: ${mergedChannels.length} channels total`);
+      console.log(`[Store] ✅ Server merge: ${mergedChannels.length} channels`);
 
-      // Push merged data back to server
+      // Push merged data back to server + Supabase
+      const pushPayload = {
+        channels     : mergedChannels,
+        sources      : mergedSources,
+        groups       : mergedGroups,
+        playlists    : mergedPlaylists,
+        modifications: mergedMods,
+      };
+
       fetch(`${url}/api/sync`, {
         method : 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Api-Key'   : get().apiKey || 'iptv-secret',
-        },
-        body: JSON.stringify({
-          channels : mergedChannels,
-          sources  : mergedSources,
-          groups   : mergedGroups,
-          playlists: mergedPlaylists,
-        }),
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': get().apiKey || 'iptv-secret' },
+        body   : JSON.stringify(pushPayload),
       }).catch(() => {});
 
-      // Also save merged to Supabase
       if (SUPABASE_ENABLED) {
         saveToSupabase({
-          channels : mergedChannels,
-          sources  : mergedSources,
-          groups   : mergedGroups,
-          playlists: mergedPlaylists,
+          ...pushPayload,
           serverUrl: get().serverUrl,
           apiKey   : get().apiKey,
           savedAt  : Date.now(),

@@ -98,13 +98,14 @@ async function sbGetChunked(baseKey: string): Promise<unknown[]> {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export interface PersistedState {
-  channels  : unknown[];
-  sources   : unknown[];
-  groups    : unknown[];
-  playlists : unknown[];
-  serverUrl : string;
-  apiKey    : string;
-  savedAt   : number;
+  channels      : unknown[];
+  sources       : unknown[];
+  groups        : unknown[];
+  playlists     : unknown[];
+  modifications?: unknown;
+  serverUrl     : string;
+  apiKey        : string;
+  savedAt       : number;
 }
 
 const META_KEY     = 'iptv_meta';
@@ -121,9 +122,10 @@ export async function saveToSupabase(state: PersistedState): Promise<void> {
   try {
     await Promise.all([
       sbSetChunked(CHANNELS_KEY, state.channels),
-      sbSet(SOURCES_KEY,  state.sources),
-      sbSet(GROUPS_KEY,   state.groups),
-      sbSet(PLAYLISTS_KEY, state.playlists),
+      sbSet(SOURCES_KEY,    state.sources),
+      sbSet(GROUPS_KEY,     state.groups),
+      sbSet(PLAYLISTS_KEY,  state.playlists),
+      sbSet('iptv_mods',    state.modifications || {}),
       sbSet(META_KEY, {
         serverUrl: state.serverUrl,
         apiKey   : state.apiKey,
@@ -142,24 +144,26 @@ export async function saveToSupabase(state: PersistedState): Promise<void> {
 export async function loadFromSupabase(): Promise<PersistedState | null> {
   if (!SUPABASE_ENABLED) return null;
   try {
-    const [channels, sources, groups, playlists, meta] = await Promise.all([
+    const [channels, sources, groups, playlists, modifications, meta] = await Promise.all([
       sbGetChunked(CHANNELS_KEY),
       sbGet(SOURCES_KEY),
       sbGet(GROUPS_KEY),
       sbGet(PLAYLISTS_KEY),
+      sbGet('iptv_mods'),
       sbGet(META_KEY),
     ]);
 
     const m = (meta as Record<string, unknown> | null) || {};
 
     return {
-      channels  : Array.isArray(channels)  ? channels  : [],
-      sources   : Array.isArray(sources)   ? sources   : [],
-      groups    : Array.isArray(groups)    ? groups    : [],
-      playlists : Array.isArray(playlists) ? playlists : [],
-      serverUrl : (m.serverUrl as string)  || '',
-      apiKey    : (m.apiKey    as string)  || 'iptv-secret',
-      savedAt   : (m.savedAt   as number)  || 0,
+      channels      : Array.isArray(channels)  ? channels  : [],
+      sources       : Array.isArray(sources)   ? sources   : [],
+      groups        : Array.isArray(groups)    ? groups    : [],
+      playlists     : Array.isArray(playlists) ? playlists : [],
+      modifications : modifications || {},
+      serverUrl     : (m.serverUrl as string)  || '',
+      apiKey        : (m.apiKey    as string)  || 'iptv-secret',
+      savedAt       : (m.savedAt   as number)  || 0,
     };
   } catch (e) {
     console.warn('[Supabase] load failed:', e);
