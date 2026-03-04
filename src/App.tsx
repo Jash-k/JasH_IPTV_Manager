@@ -27,15 +27,14 @@ export default function App() {
     activeTab, setActiveTab,
     channels, sources, playlists, groups,
     showTamilOnly, setShowTamilOnly,
-    serverUrl, hydrated,
-    loadFromServer,
+    hydrated,
   } = store;
 
-  const [sidebarOpen, setSidebarOpen]   = useState(false);
+  const [sidebarOpen, setSidebarOpen]     = useState(false);
   const [serverLoading, setServerLoading] = useState(false);
-  const [startupDone, setStartupDone]   = useState(false);
+  const [startupDone, setStartupDone]     = useState(false);
 
-  // ── On mount: load from server and merge with localStorage ───────────────
+  // ── On mount: load from Supabase → merge with server ─────────────────────
   useEffect(() => {
     if (startupDone) return;
     setStartupDone(true);
@@ -43,17 +42,15 @@ export default function App() {
     const run = async () => {
       setServerLoading(true);
       try {
-        await loadFromServer(serverUrl || window.location.origin);
+        await store.initFromStorage();
       } catch {
-        // fall through — localStorage data already in state via persist
+        store.setHydrated(true);
       } finally {
         setServerLoading(false);
       }
     };
 
-    // Small delay so Zustand persist can rehydrate from localStorage first
-    const timer = setTimeout(run, 300);
-    return () => clearTimeout(timer);
+    run();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -281,8 +278,10 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <p className="text-xs text-gray-400 font-medium">Persistence</p>
                 <div className="flex items-center gap-1">
-                  <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                  <span className="text-green-400 text-xs">localStorage ✓</span>
+                  <div className={`w-1.5 h-1.5 rounded-full ${store.supabaseOk ? 'bg-green-500' : 'bg-yellow-500'}`} />
+                  <span className={`text-xs ${store.supabaseOk ? 'text-green-400' : 'text-yellow-400'}`}>
+                    {store.supabaseOk ? 'Supabase ✓' : 'Session only'}
+                  </span>
                 </div>
               </div>
               <div className="flex items-center justify-between">
