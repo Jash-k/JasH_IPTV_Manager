@@ -81,7 +81,9 @@ function debouncedSave(state: AppState) {
 
     // 3. Server (Render disk) — extra 5s delay
     const url = state.serverUrl || DEFAULT_SERVER;
-    if (url && !url.includes('localhost:517') && !url.includes('127.0.0.1')) {
+    const isLocalDev = url.includes('localhost:517') || url.includes('localhost:517') ||
+      url.includes('127.0.0.1:517');
+    if (url && !isLocalDev) {
       if (syncTimer) clearTimeout(syncTimer);
       syncTimer = setTimeout(() => {
         fetch(`${url}/api/sync`, {
@@ -835,48 +837,55 @@ export const useStore = create<AppState>()((set, get) => ({
    * Priority: Supabase → sessionStorage → server
    */
   initFromStorage: async () => {
-    // 1. Try Supabase (cloud, most reliable)
+    // 1. Try Supabase (cloud, most reliable — survives all redeploys)
     if (SUPABASE_ENABLED) {
       try {
         const sb = await loadFromSupabase();
         if (sb && Array.isArray(sb.channels) && sb.channels.length > 0) {
+          const mods = (sb as unknown as { modifications?: ModificationStore }).modifications;
           set({
-            channels     : sb.channels   as Channel[],
-            sources      : sb.sources    as Source[],
-            groups       : sb.groups     as Group[],
-            playlists    : sb.playlists  as PlaylistConfig[],
-            modifications: (sb as { modifications?: ModificationStore }).modifications || { ...EMPTY_MODS },
+            channels     : sb.channels  as Channel[],
+            sources      : sb.sources   as Source[],
+            groups       : sb.groups    as Group[],
+            playlists    : sb.playlists as PlaylistConfig[],
+            modifications: mods && typeof mods === 'object'
+              ? { ...EMPTY_MODS, ...mods }
+              : { ...EMPTY_MODS },
             serverUrl    : (sb.serverUrl as string) || DEFAULT_SERVER,
-            apiKey       : (sb.apiKey   as string) || 'iptv-secret',
+            apiKey       : (sb.apiKey   as string)  || 'iptv-secret',
             hydrated     : true,
+            supabaseOk   : true,
           });
-          console.log(`[Store] ✅ Supabase: ${sb.channels.length} channels`);
-          // Merge with server in background
+          console.log(`[Store] ✅ Supabase: ${sb.channels.length} channels loaded`);
+          // Merge with server in background (don't await — show UI immediately)
           void get().loadFromServer((sb.serverUrl as string) || DEFAULT_SERVER);
           return;
         }
       } catch (e) {
         console.warn('[Store] Supabase load failed:', e);
+        set({ supabaseOk: false });
       }
     }
 
-    // 2. Try sessionStorage (instant, in-tab)
+    // 2. Try sessionStorage (instant in-tab cache)
     const session = loadSession();
     if (session && Array.isArray(session.channels) && session.channels.length > 0) {
       set({
         channels     : session.channels,
-        sources      : session.sources   || [],
-        groups       : session.groups    || [],
-        playlists    : session.playlists || [],
-        modifications: session.modifications || { ...EMPTY_MODS },
-        serverUrl    : session.serverUrl  || DEFAULT_SERVER,
-        apiKey       : session.apiKey     || 'iptv-secret',
+        sources      : Array.isArray(session.sources)   ? session.sources   : [],
+        groups       : Array.isArray(session.groups)    ? session.groups    : [],
+        playlists    : Array.isArray(session.playlists) ? session.playlists : [],
+        modifications: session.modifications
+          ? { ...EMPTY_MODS, ...(session.modifications as ModificationStore) }
+          : { ...EMPTY_MODS },
+        serverUrl    : session.serverUrl || DEFAULT_SERVER,
+        apiKey       : session.apiKey    || 'iptv-secret',
         hydrated     : true,
       });
-      console.log(`[Store] ✅ Session: ${session.channels.length} channels`);
+      console.log(`[Store] ✅ Session cache: ${session.channels.length} channels`);
     }
 
-    // 3. Always try server (may have newer data)
+    // 3. Always try server (primary source of truth — disk db.json or Supabase)
     await get().loadFromServer(get().serverUrl || DEFAULT_SERVER);
   },
 
@@ -885,7 +894,9 @@ export const useStore = create<AppState>()((set, get) => ({
    */
   loadFromServer: async (overrideUrl?: string) => {
     const url = overrideUrl || get().serverUrl || DEFAULT_SERVER;
-    if (!url || url.includes('localhost:517') || url.includes('127.0.0.1')) {
+    // Skip if clearly a Vite dev server (not a backend)
+    const isViteDev = url.includes(':5173') || url.includes(':5174') || url.includes(':5175');
+    if (!url || isViteDev) {
       set({ hydrated: true });
       return;
     }
@@ -911,10 +922,11 @@ export const useStore = create<AppState>()((set, get) => ({
       const mergedSources    = mergeById(local.sources,   (serverData.sources   || []) as Source[]);
       const mergedGroups     = mergeById(local.groups,    (serverData.groups    || []) as Group[]);
       const mergedPlaylists  = mergeById(local.playlists, (serverData.playlists || []) as PlaylistConfig[]);
-      const mergedMods       = mergeMods(
-        local.modifications,
-        serverData.modifications || { ...EMPTY_MODS }
-      );
+      const serverMods = serverData.modifications
+        ? { ...EMPTY_MODS, ...(serverData.modifications as ModificationStore) }
+        : { ...EMPTY_MODS };
+
+      const mergedMods = mergeMods(local.modifications, serverMods);
 
       set({
         channels     : mergedChannels,

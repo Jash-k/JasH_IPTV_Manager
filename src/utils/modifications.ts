@@ -154,6 +154,8 @@ export function applyModifications(
 
   // ── Step 3: Apply group rules ─────────────────────────────────────────────
   for (const rule of groupRules) {
+    // Skip rule only when BOTH rule.sourceId AND sourceId are set AND they differ
+    // Global rules (no rule.sourceId) always apply
     if (rule.sourceId && sourceId && rule.sourceId !== sourceId) continue;
 
     if (rule.ruleType === 'remove') {

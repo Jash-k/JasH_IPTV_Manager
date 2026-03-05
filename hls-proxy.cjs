@@ -76,13 +76,52 @@ function isHlsRedirectUrl(url) {
 }
 
 // ─── DB Reader ────────────────────────────────────────────────────────────────
+// In-memory cache to avoid repeated disk reads
+let _dbCache = null;
+let _dbCacheTime = 0;
+const DB_CACHE_TTL = 30000; // 30 seconds
+
 function readDB() {
+  // Return cache if fresh
+  if (_dbCache && Date.now() - _dbCacheTime < DB_CACHE_TTL) {
+    return _dbCache;
+  }
   try {
     if (fs.existsSync(DB_FILE)) {
-      return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      if (data && Array.isArray(data.channels) && data.channels.length > 0) {
+        _dbCache = data;
+        _dbCacheTime = Date.now();
+        return data;
+      }
     }
   } catch (e) { /* ignore */ }
-  return { channels: [], sources: [] };
+  return _dbCache || { channels: [], sources: [] };
+}
+
+// Fetch channel from main server API if not in disk DB
+async function getChannelById(id) {
+  const db = readDB();
+  const ch = (db.channels || []).find(c => c.id === id);
+  if (ch) return ch;
+
+  // Fallback: ask main server
+  try {
+    const mainUrl = `http://127.0.0.1:${MAIN_PORT}/api/channels?limit=1&q=${encodeURIComponent(id)}`;
+    const resp = await new Promise((resolve, reject) => {
+      http.get(mainUrl, { timeout: 5000 }, resolve).on('error', reject);
+    });
+    const chunks = [];
+    await new Promise((resolve, reject) => {
+      resp.on('data', c => chunks.push(c));
+      resp.on('end', resolve);
+      resp.on('error', reject);
+    });
+    const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (data.channels && data.channels.length > 0) return data.channels[0];
+  } catch { /* ignore */ }
+
+  return null;
 }
 
 // ─── URL Utils ────────────────────────────────────────────────────────────────
@@ -292,8 +331,7 @@ app.get('/health', (req, res) => {
 
 // ── Playlist / Manifest ───────────────────────────────────────────────────────
 app.get('/hls/:id/playlist.m3u8', async (req, res) => {
-  const db = readDB();
-  const ch = (db.channels || []).find(c => c.id === req.params.id);
+  const ch = await getChannelById(req.params.id);
 
   if (!ch) {
     return res.status(404).json({ error: 'Channel not found', id: req.params.id });
@@ -353,8 +391,7 @@ app.get('/hls/:id/playlist.m3u8', async (req, res) => {
 
 // ── Sub-manifest proxy (variant/audio playlists) ──────────────────────────────
 app.get('/hls/:id/manifest/:encodedUrl', async (req, res) => {
-  const db = readDB();
-  const ch = (db.channels || []).find(c => c.id === req.params.id);
+  const ch = await getChannelById(req.params.id);
 
   let targetUrl;
   try {
@@ -387,8 +424,7 @@ app.get('/hls/:id/manifest/:encodedUrl', async (req, res) => {
 
 // ── Segment proxy — streams .ts segments directly ─────────────────────────────
 app.get('/hls/:id/seg/:encodedUrl', async (req, res) => {
-  const db = readDB();
-  const ch = (db.channels || []).find(c => c.id === req.params.id);
+  const ch = await getChannelById(req.params.id);
 
   let segUrl;
   try {
@@ -437,8 +473,7 @@ app.get('/hls/:id/seg/:encodedUrl', async (req, res) => {
 
 // ── Key proxy — AES-128 decryption keys ───────────────────────────────────────
 app.get('/hls/:id/key/:encodedUrl', async (req, res) => {
-  const db = readDB();
-  const ch = (db.channels || []).find(c => c.id === req.params.id);
+  const ch = await getChannelById(req.params.id);
 
   let keyUrl;
   try {

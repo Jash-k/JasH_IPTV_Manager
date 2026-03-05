@@ -101,7 +101,14 @@ function sbRequest(method, path2, body) {
     const parsed = new URL(url);
     const lib    = parsed.protocol === 'https:' ? https : http;
     const data   = body ? JSON.stringify(body) : undefined;
-    const hdrs   = { ...sbHeaders(), ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}) };
+    const prefer = method === 'GET'
+      ? 'return=representation'
+      : 'resolution=merge-duplicates,return=minimal';
+    const hdrs   = {
+      ...sbHeaders(),
+      'Prefer': prefer,
+      ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
+    };
 
     const req = lib.request(url, { method, headers: hdrs, timeout: 15000 }, res => {
       const chunks = [];
@@ -122,7 +129,9 @@ function sbRequest(method, path2, body) {
 async function sbGet(key) {
   if (!SUPABASE_ON) return null;
   try {
-    const r = await sbRequest('GET', `iptv_store?key=eq.${encodeURIComponent(key)}&select=value`, null);
+    const url = `iptv_store?key=eq.${encodeURIComponent(key)}&select=value`;
+    // Need return=representation to get response body
+    const r = await sbRequest('GET', url, null);
     const rows = Array.isArray(r.data) ? r.data : [];
     return rows[0]?.value ?? null;
   } catch { return null; }
@@ -131,6 +140,7 @@ async function sbGet(key) {
 async function sbSet(key, value) {
   if (!SUPABASE_ON) return;
   try {
+    // POST with merge-duplicates = upsert
     await sbRequest('POST', 'iptv_store', { key, value, updated_at: new Date().toISOString() });
   } catch { /* silent */ }
 }
@@ -249,7 +259,15 @@ function writeDB(data) {
   DB = {
     ...EMPTY_DB,
     ...data,
-    channels: (data.channels || []).filter(c => c && (c.url || c.rawUrl) && !isDRM(c)),
+    channels: (data.channels || []).filter(c => {
+      if (!c) return false;
+      // Must have at least one URL field
+      const hasUrl = !!(c.rawUrl || c.url);
+      if (!hasUrl) return false;
+      // Strip DRM channels
+      if (isDRM(c)) return false;
+      return true;
+    }),
   };
   writeDisk(DB);
 }
