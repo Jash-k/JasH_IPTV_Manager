@@ -1,9 +1,9 @@
 #!/bin/sh
 # =============================================================================
-# start.sh — Launch both servers
+# start.sh — Launch both IPTV servers
 #
-# Main Server  (port 10000) — Pure 302 redirect for normal streams
-# HLS Proxy    (port 10001) — Manifest rewrite for redirect-chain HLS streams
+# Main Server  (port 10000) — 302 redirect + API + frontend
+# HLS Proxy    (port 10001) — manifest rewrite for redirect-chain HLS streams
 # =============================================================================
 
 set -e
@@ -11,25 +11,32 @@ set -e
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║  📺  IPTV Manager — Starting Servers                     ║"
 echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  Main Server  : port 10000 (302 redirects)               ║"
-echo "║  HLS Proxy    : port 10001 (manifest rewrite)            ║"
+echo "║  Main Server  : port ${PORT:-10000} (302 redirects + API)            ║"
+echo "║  HLS Proxy    : port ${HLS_PORT:-10001} (manifest rewrite)            ║"
+echo "║  DB           : ${DB_FILE:-/data/db/db.json}                 ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 
 # Ensure /data directory exists for persistent DB
 mkdir -p /data/db 2>/dev/null || true
+mkdir -p /app     2>/dev/null || true
 
-# Start HLS Proxy in background
-node hls-proxy.cjs &
-HLS_PID=$!
-echo "[START] HLS Proxy started (PID $HLS_PID)"
+# Start HLS Proxy in background — restart if it crashes
+start_hls() {
+  while true; do
+    echo "[START] Starting HLS Proxy on port ${HLS_PORT:-10001}..."
+    node /app/hls-proxy.cjs || true
+    echo "[START] HLS Proxy crashed — restarting in 3s..."
+    sleep 3
+  done
+}
 
-# Start Main Server in foreground (keeps container alive)
-node server.cjs &
-MAIN_PID=$!
-echo "[START] Main Server started (PID $MAIN_PID)"
+start_hls &
+HLS_BG_PID=$!
+echo "[START] HLS Proxy background watcher PID: $HLS_BG_PID"
 
-# Handle shutdown gracefully
-trap "echo '[START] Shutting down...'; kill $HLS_PID $MAIN_PID 2>/dev/null; exit 0" TERM INT
+# Give HLS proxy a moment to start
+sleep 2
 
-# Wait for either process to exit
-wait $HLS_PID $MAIN_PID
+# Start Main Server in foreground — if this exits, container exits
+echo "[START] Starting Main Server on port ${PORT:-10000}..."
+exec node /app/server.cjs

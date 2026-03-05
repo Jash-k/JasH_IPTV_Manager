@@ -34,7 +34,8 @@ const path    = require('path');
 const app       = express();
 const HLS_PORT  = parseInt(process.env.HLS_PORT || '10001', 10);
 const MAIN_PORT = parseInt(process.env.PORT     || '10000', 10);
-const DB_FILE   = process.env.DB_FILE || path.join(__dirname, 'db.json');
+const DB_FILE   = process.env.DB_FILE ||
+  (fs.existsSync('/data') ? '/data/db/db.json' : path.join(__dirname, 'db.json'));
 
 app.use(cors({ origin: '*' }));
 app.use(express.json());

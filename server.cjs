@@ -1,13 +1,15 @@
 'use strict';
 
 // =============================================================================
-// IPTV Redirect Server v15
+// IPTV Redirect Server v16 — Production Ready
 //
-// Routing:
-//   Normal streams    → exact rawUrl in M3U (pipe headers preserved)
-//   /redirect/:id     → pure 302 to clean URL (pipe headers stripped)
-//   Redirect-chain HLS → /hls/:id/playlist.m3u8 (proxied via hls-proxy.cjs)
-//   /hls/*            → forwarded to hls-proxy.cjs on port 10001
+// Features:
+//   • Supabase startup load — data survives redeploys even without disk
+//   • Pure 302 redirect for direct streams (rawUrl preserved with pipe headers)
+//   • HLS proxy for redirect-chain streams (forwarded to hls-proxy:10001)
+//   • Overlay/Delta modifications preserved across syncs
+//   • Keepalive for Render free tier
+//   • Auto-merge: Supabase → disk → memory on startup
 // =============================================================================
 
 const express  = require('express');
@@ -21,15 +23,244 @@ const { URL }  = require('url');
 const app      = express();
 const PORT     = parseInt(process.env.PORT     || '10000', 10);
 const HLS_PORT = parseInt(process.env.HLS_PORT || '10001', 10);
-const DB_FILE  = process.env.DB_FILE  || (fs.existsSync('/data') ? '/data/db/db.json' : path.join(__dirname, 'db.json'));
-const DIST_DIR = path.join(__dirname, 'dist');
 const API_KEY  = process.env.API_KEY  || 'iptv-secret';
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || '';
+const DIST_DIR = path.join(__dirname, 'dist');
 
-// ─── Middleware ───────────────────────────────────────────────────────────────
+// Supabase (optional — server-side fetch for DB persistence)
+const SUPABASE_URL = process.env.SUPABASE_URL      || process.env.VITE_SUPABASE_URL      || '';
+const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const SUPABASE_ON  = !!(SUPABASE_URL && SUPABASE_KEY);
+
+// DB file path — use persistent Render disk if available
+const DB_FILE = process.env.DB_FILE ||
+  (fs.existsSync('/data') ? '/data/db/db.json' : path.join(__dirname, 'db.json'));
+
+console.log(`[IPTV] DB_FILE     : ${DB_FILE}`);
+console.log(`[IPTV] Supabase    : ${SUPABASE_ON ? 'enabled ✓' : 'disabled'}`);
+console.log(`[IPTV] HLS Proxy   : port ${HLS_PORT}`);
+
+// ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '100mb' }));
 app.use(express.static(DIST_DIR));
+
+// =============================================================================
+// EMPTY DB TEMPLATE
+// =============================================================================
+const EMPTY_DB = {
+  channels     : [],
+  sources      : [],
+  groups       : [],
+  playlists    : [],
+  modifications: null,
+  settings     : { apiKey: API_KEY },
+  savedAt      : 0,
+};
+
+// =============================================================================
+// DISK DB
+// =============================================================================
+function readDisk() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      if (data && Array.isArray(data.channels)) return { ...EMPTY_DB, ...data };
+    }
+  } catch (e) { console.warn('[DB] disk read error:', e.message); }
+  return null;
+}
+
+function writeDisk(data) {
+  try {
+    const dir = path.dirname(DB_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const clean = {
+      ...data,
+      channels: (data.channels || []).filter(c => c && (c.url || c.rawUrl)),
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(clean, null, 2));
+  } catch (e) { console.warn('[DB] disk write error:', e.message); }
+}
+
+// =============================================================================
+// SUPABASE HELPERS (server-side REST)
+// =============================================================================
+function sbHeaders() {
+  return {
+    'Content-Type' : 'application/json',
+    'apikey'       : SUPABASE_KEY,
+    'Authorization': `Bearer ${SUPABASE_KEY}`,
+    'Prefer'       : 'return=minimal',
+  };
+}
+
+function sbRequest(method, path2, body) {
+  return new Promise((resolve, reject) => {
+    const url    = `${SUPABASE_URL}/rest/v1/${path2}`;
+    const parsed = new URL(url);
+    const lib    = parsed.protocol === 'https:' ? https : http;
+    const data   = body ? JSON.stringify(body) : undefined;
+    const hdrs   = { ...sbHeaders(), ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}) };
+
+    const req = lib.request(url, { method, headers: hdrs, timeout: 15000 }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end',  () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        try { resolve({ status: res.statusCode, data: text ? JSON.parse(text) : null }); }
+        catch { resolve({ status: res.statusCode, data: text }); }
+      });
+    });
+    req.on('error',   reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Supabase timeout')); });
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+async function sbGet(key) {
+  if (!SUPABASE_ON) return null;
+  try {
+    const r = await sbRequest('GET', `iptv_store?key=eq.${encodeURIComponent(key)}&select=value`, null);
+    const rows = Array.isArray(r.data) ? r.data : [];
+    return rows[0]?.value ?? null;
+  } catch { return null; }
+}
+
+async function sbSet(key, value) {
+  if (!SUPABASE_ON) return;
+  try {
+    await sbRequest('POST', 'iptv_store', { key, value, updated_at: new Date().toISOString() });
+  } catch { /* silent */ }
+}
+
+// Load full DB from Supabase (chunked channels)
+async function loadFromSupabase() {
+  if (!SUPABASE_ON) return null;
+  try {
+    const [totalChunks, sources, groups, playlists, mods, meta] = await Promise.all([
+      sbGet('iptv_channels__chunks'),
+      sbGet('iptv_sources'),
+      sbGet('iptv_groups'),
+      sbGet('iptv_playlists'),
+      sbGet('iptv_mods'),
+      sbGet('iptv_meta'),
+    ]);
+
+    // Load channel chunks
+    const numChunks = typeof totalChunks === 'number' ? totalChunks : 0;
+    let channels = [];
+    if (numChunks > 0) {
+      const chunkResults = await Promise.all(
+        Array.from({ length: numChunks }, (_, i) => sbGet(`iptv_channels__chunk_${i}`))
+      );
+      channels = chunkResults.flatMap(c => Array.isArray(c) ? c : []);
+    } else {
+      const fallback = await sbGet('iptv_channels');
+      if (Array.isArray(fallback)) channels = fallback;
+    }
+
+    if (!channels.length && !Array.isArray(sources)) return null;
+
+    const m = (meta && typeof meta === 'object') ? meta : {};
+    return {
+      channels     : channels,
+      sources      : Array.isArray(sources)   ? sources   : [],
+      groups       : Array.isArray(groups)    ? groups    : [],
+      playlists    : Array.isArray(playlists) ? playlists : [],
+      modifications: mods || null,
+      settings     : { apiKey: m.apiKey || API_KEY },
+      savedAt      : m.savedAt || 0,
+    };
+  } catch (e) {
+    console.warn('[Supabase] load failed:', e.message);
+    return null;
+  }
+}
+
+// Save full DB to Supabase (chunked channels)
+async function saveToSupabase(db) {
+  if (!SUPABASE_ON) return;
+  const CHUNK = 2000;
+  const chs   = db.channels || [];
+  const total = Math.ceil(chs.length / CHUNK) || 0;
+
+  const saves = [];
+  for (let i = 0; i < total; i++) {
+    saves.push(sbSet(`iptv_channels__chunk_${i}`, chs.slice(i * CHUNK, (i + 1) * CHUNK)));
+  }
+  saves.push(sbSet('iptv_channels__chunks', total));
+  saves.push(sbSet('iptv_sources',    db.sources    || []));
+  saves.push(sbSet('iptv_groups',     db.groups     || []));
+  saves.push(sbSet('iptv_playlists',  db.playlists  || []));
+  saves.push(sbSet('iptv_mods',       db.modifications || {}));
+  saves.push(sbSet('iptv_meta', {
+    apiKey : db.settings?.apiKey || API_KEY,
+    savedAt: Date.now(),
+    count  : chs.length,
+  }));
+
+  try { await Promise.all(saves); console.log(`[Supabase] ✅ saved ${chs.length} channels`); }
+  catch (e) { console.warn('[Supabase] save error:', e.message); }
+}
+
+// =============================================================================
+// IN-MEMORY DB — loaded once at startup, kept in sync
+// =============================================================================
+let DB = { ...EMPTY_DB };
+
+async function initDB() {
+  console.log('[DB] Initializing...');
+
+  // 1. Try Supabase first (always has latest data, survives redeploys)
+  if (SUPABASE_ON) {
+    try {
+      const sb = await loadFromSupabase();
+      if (sb && sb.channels.length > 0) {
+        DB = { ...EMPTY_DB, ...sb };
+        writeDisk(DB); // cache to disk
+        console.log(`[DB] ✅ Loaded ${DB.channels.length} channels from Supabase`);
+        return;
+      }
+    } catch (e) {
+      console.warn('[DB] Supabase init failed:', e.message);
+    }
+  }
+
+  // 2. Try disk (Render persistent disk — survives redeploys if disk exists)
+  const disk = readDisk();
+  if (disk && disk.channels.length > 0) {
+    DB = disk;
+    console.log(`[DB] ✅ Loaded ${DB.channels.length} channels from disk`);
+    // Push to Supabase in background
+    saveToSupabase(DB).catch(() => {});
+    return;
+  }
+
+  // 3. Start fresh
+  DB = { ...EMPTY_DB };
+  console.log('[DB] Starting fresh — no existing data found');
+}
+
+function readDB() { return DB; }
+
+function writeDB(data) {
+  DB = {
+    ...EMPTY_DB,
+    ...data,
+    channels: (data.channels || []).filter(c => c && (c.url || c.rawUrl) && !isDRM(c)),
+  };
+  writeDisk(DB);
+}
+
+// Debounced Supabase sync — don't hammer on every request
+let sbSyncTimer = null;
+function scheduleSbSync() {
+  if (!SUPABASE_ON) return;
+  if (sbSyncTimer) clearTimeout(sbSyncTimer);
+  sbSyncTimer = setTimeout(() => { saveToSupabase(DB).catch(() => {}); }, 5000);
+}
 
 // =============================================================================
 // HLS REDIRECT-CHAIN DETECTION
@@ -44,42 +275,12 @@ const HLS_REDIRECT_PATTERNS = [
 
 function isHlsRedirectUrl(url) {
   if (!url) return false;
-  const u = url.toLowerCase();
+  const u       = url.toLowerCase();
   const noQuery = u.split('?')[0];
-  // Already a direct stream file — no proxy needed
-  if (noQuery.endsWith('.m3u8') || noQuery.endsWith('.m3u') || noQuery.endsWith('.mpd') || noQuery.endsWith('.ts')) return false;
-  // Has m3u8 in query string → redirect chain
+  if (noQuery.endsWith('.m3u8') || noQuery.endsWith('.m3u') ||
+      noQuery.endsWith('.mpd')  || noQuery.endsWith('.ts')) return false;
   if (u.includes('e=.m3u8') || u.includes('type=m3u8') || u.includes('format=m3u8')) return true;
   return HLS_REDIRECT_PATTERNS.some(p => p.test(url));
-}
-
-// =============================================================================
-// DB
-// =============================================================================
-const EMPTY_DB = {
-  sources: [], channels: [], groups: [],
-  playlists: [], modifications: null,
-  settings: { apiKey: API_KEY },
-};
-
-function readDB() {
-  try {
-    if (fs.existsSync(DB_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-      if (parsed.channels) parsed.channels = parsed.channels.filter(c => !isDRM(c));
-      return { ...EMPTY_DB, ...parsed };
-    }
-  } catch (e) { console.error('[DB] load error:', e.message); }
-  return { ...EMPTY_DB };
-}
-
-function writeDB(data) {
-  try {
-    const clean = { ...data, channels: (data.channels || []).filter(c => !isDRM(c)) };
-    const dir   = path.dirname(DB_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(DB_FILE, JSON.stringify(clean, null, 2));
-  } catch (e) { console.error('[DB] save error:', e.message); }
 }
 
 // =============================================================================
@@ -90,7 +291,6 @@ function parsePipeUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return { url: '', headers: {} };
   const pipeIdx = rawUrl.indexOf('|');
   if (pipeIdx === -1) return { url: rawUrl.trim(), headers: {} };
-
   const url     = rawUrl.substring(0, pipeIdx).trim();
   const headers = {};
   rawUrl.substring(pipeIdx + 1).split('|').forEach(part => {
@@ -102,7 +302,7 @@ function parsePipeUrl(rawUrl) {
 }
 
 // =============================================================================
-// DRM DETECTION — strip completely
+// DRM DETECTION
 // =============================================================================
 function isDRM(ch) {
   if (!ch) return true;
@@ -132,10 +332,6 @@ function isTamil(ch) {
 
 // =============================================================================
 // M3U GENERATOR
-//
-// Smart URL routing:
-//   1. Redirect-chain HLS → /hls/:id/playlist.m3u8 (served by hls-proxy)
-//   2. All other streams  → exact rawUrl (with pipe headers preserved)
 // =============================================================================
 function esc(s) {
   return String(s || '').replace(/"/g, "'").replace(/[\r\n]/g, ' ');
@@ -158,8 +354,7 @@ function generateM3U(channels, opts = {}) {
     if (ch.enabled  === false)     return false;
     if (ch.isActive === false)     return false;
     const u = ch.rawUrl || ch.url || '';
-    if (!u) return false;
-    return true;
+    return !!u;
   });
 
   const lines = ['#EXTM3U x-tvg-url=""'];
@@ -171,23 +366,20 @@ function generateM3U(channels, opts = {}) {
     const group   = ` group-title="${esc(ch.group || 'General')}"`;
     const tamil   = isTamil(ch) ? ' x-tamil="true"' : '';
 
-    const sourceUrl          = ch.rawUrl || ch.url || '';
-    const { url: cleanUrl }  = parsePipeUrl(sourceUrl);
-    const needsHlsProxy      = isHlsRedirectUrl(cleanUrl);
+    const sourceUrl         = ch.rawUrl || ch.url || '';
+    const { url: cleanUrl } = parsePipeUrl(sourceUrl);
+    const needsHlsProxy     = isHlsRedirectUrl(cleanUrl);
 
-    // Choose stream URL based on type
-    let streamUrl;
-    if (needsHlsProxy) {
-      // Redirect-chain → HLS proxy rewrites manifest + segments
-      streamUrl = `${publicBase}/hls/${ch.id}/playlist.m3u8`;
-    } else {
-      // Direct stream → exact original URL with pipe headers preserved
-      streamUrl = sourceUrl;
-    }
+    // Routing:
+    // HLS redirect-chain → /hls/:id/playlist.m3u8 (proxied)
+    // Direct stream      → exact rawUrl (pipe headers preserved for players)
+    const streamUrl = needsHlsProxy
+      ? `${publicBase}/hls/${ch.id}/playlist.m3u8`
+      : sourceUrl;
 
     lines.push(`#EXTINF:-1${tvgId}${tvgName}${logo}${group}${tamil},${esc(ch.name)}`);
 
-    // VLC opts for non-pipe-header direct streams
+    // VLC opts for non-proxy, non-pipe streams
     if (!needsHlsProxy && !sourceUrl.includes('|')) {
       if (ch.userAgent) lines.push(`#EXTVLCOPT:http-user-agent=${ch.userAgent}`);
       if (ch.referer)   lines.push(`#EXTVLCOPT:http-referrer=${ch.referer}`);
@@ -204,39 +396,35 @@ function generateM3U(channels, opts = {}) {
 // REVERSE PROXY — forward /hls/* to hls-proxy.cjs on port 10001
 // =============================================================================
 function forwardToHlsProxy(req, res) {
-  const targetPath = req.url; // includes /hls/...
   const options = {
     hostname           : '127.0.0.1',
     port               : HLS_PORT,
-    path               : targetPath,
+    path               : req.url,
     method             : req.method,
     headers            : { ...req.headers, host: `127.0.0.1:${HLS_PORT}` },
     rejectUnauthorized : false,
+    timeout            : 30000,
   };
 
   const proxyReq = http.request(options, proxyRes => {
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
     proxyRes.pipe(res);
-    proxyRes.on('error', err => {
-      console.error('[HLS-FWD] Upstream error:', err.message);
-    });
   });
 
   proxyReq.on('error', err => {
-    console.error('[HLS-FWD] Proxy error:', err.message);
+    console.error('[HLS-FWD]', err.message);
     if (!res.headersSent) {
       res.status(502).json({ error: 'HLS proxy unavailable', detail: err.message });
     }
   });
 
-  if (req.body) proxyReq.write(JSON.stringify(req.body));
+  if (req.body && Object.keys(req.body).length) {
+    proxyReq.write(JSON.stringify(req.body));
+  }
   proxyReq.end();
 }
 
-// Forward all /hls/* requests to hls-proxy.cjs
-app.use('/hls', (req, res) => {
-  forwardToHlsProxy(req, res);
-});
+app.use('/hls', (req, res) => forwardToHlsProxy(req, res));
 
 // =============================================================================
 // DEFAULT PLAYLIST BUILDER
@@ -245,7 +433,7 @@ function buildDefaultPlaylist(db) {
   const playlists = db.playlists || [];
   const channels  = db.channels  || [];
 
-  if (playlists.length === 0) {
+  if (!playlists.length) {
     return channels.filter(c => c.enabled !== false && c.isActive !== false);
   }
 
@@ -257,13 +445,9 @@ function buildDefaultPlaylist(db) {
     const pinned  = playlist.pinnedChannels || [];
 
     for (const pid of pinned) {
-      if (!seen.has(pid)) {
-        const ch = channels.find(c => c.id === pid);
-        if (ch && !isDRM(ch) && !blocked.has(ch.id)) {
-          result.push(ch);
-          seen.add(pid);
-        }
-      }
+      if (seen.has(pid)) continue;
+      const ch = channels.find(c => c.id === pid);
+      if (ch && !isDRM(ch) && !blocked.has(ch.id)) { result.push(ch); seen.add(pid); }
     }
 
     for (const ch of channels) {
@@ -271,8 +455,7 @@ function buildDefaultPlaylist(db) {
       if (ch.enabled === false || ch.isActive === false) continue;
       if (playlist.includeGroups?.length && !playlist.includeGroups.includes(ch.group)) continue;
       if (playlist.tamilOnly && !isTamil(ch)) continue;
-      result.push(ch);
-      seen.add(ch.id);
+      result.push(ch); seen.add(ch.id);
     }
   }
 
@@ -301,7 +484,8 @@ function headCheck(rawUrl, timeoutMs = 7000) {
       }, res => {
         const latency = Date.now() - t0;
         const status  = res.statusCode || 0;
-        done({ ok: status >= 200 && status < 400, status, latency, contentType: res.headers['content-type'] || '' });
+        done({ ok: status >= 200 && status < 400, status, latency,
+               contentType: res.headers['content-type'] || '' });
         res.resume();
       });
 
@@ -340,11 +524,11 @@ function fetchText(url, timeoutMs = 20000) {
           }
           const chunks = [];
           res.on('data', c => chunks.push(c));
-          res.on('end',  () => {
+          res.on('end', () => {
             if (res.statusCode >= 200 && res.statusCode < 400) {
               resolve(Buffer.concat(chunks).toString('utf8'));
             } else {
-              reject(new Error(`HTTP ${res.statusCode}`));
+              reject(new Error(`HTTP ${res.statusCode} from ${target}`));
             }
           });
         }).on('error', reject).on('timeout', () => reject(new Error('Timeout')));
@@ -356,12 +540,11 @@ function fetchText(url, timeoutMs = 20000) {
 }
 
 // =============================================================================
-// AUTH MIDDLEWARE
+// AUTH
 // =============================================================================
 function auth(req, res, next) {
-  const db  = readDB();
   const key = req.headers['x-api-key'] || req.query.key;
-  if (key !== (db.settings?.apiKey || API_KEY)) {
+  if (key !== (DB.settings?.apiKey || API_KEY)) {
     return res.status(401).json({ error: 'Unauthorized — set X-Api-Key header' });
   }
   next();
@@ -373,18 +556,18 @@ function auth(req, res, next) {
 
 // ── Health ────────────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-  const db  = readDB();
-  const chs = db.channels || [];
+  const chs = DB.channels || [];
   res.json({
     status    : 'ok',
     uptime    : Math.floor(process.uptime()),
     channels  : chs.length,
-    sources   : (db.sources   || []).length,
-    playlists : (db.playlists || []).length,
-    groups    : (db.groups    || []).length,
+    sources   : (DB.sources   || []).length,
+    playlists : (DB.playlists || []).length,
+    groups    : (DB.groups    || []).length,
     tamil     : chs.filter(c => isTamil(c)).length,
-    hlsProxy  : `http://127.0.0.1:${HLS_PORT}`,
-    version   : '15.0',
+    supabase  : SUPABASE_ON,
+    hlsProxy  : `port ${HLS_PORT}`,
+    version   : '16.0',
     ts        : new Date().toISOString(),
   });
 });
@@ -394,62 +577,67 @@ app.get('/health', (req, res) => {
 // =============================================================================
 
 app.get('/api/playlist/default.m3u', (req, res) => {
-  const db  = readDB();
-  const chs = buildDefaultPlaylist(db);
-  res.setHeader('Content-Type',     'application/x-mpegurl; charset=utf-8');
-  res.setHeader('Cache-Control',    'no-cache, no-store');
+  const chs = buildDefaultPlaylist(DB);
+  res.setHeader('Content-Type',  'application/x-mpegurl; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma',        'no-cache');
+  res.setHeader('Expires',       '0');
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Disposition', 'inline; filename="default.m3u"');
   res.send(generateM3U(chs, { req }));
 });
 
 app.get('/api/playlist/all.m3u', (req, res) => {
-  const db    = readDB();
-  const chs   = (db.channels || []).filter(c => c.enabled !== false && c.isActive !== false);
+  const chs   = (DB.channels || []).filter(c => c.enabled !== false && c.isActive !== false);
   const tamil = req.query.tamil === '1';
   res.setHeader('Content-Type',  'application/x-mpegurl; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-store');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.send(generateM3U(chs, { tamilOnly: tamil, req }));
 });
 
 app.get('/api/playlist/tamil.m3u', (req, res) => {
-  const db  = readDB();
-  const chs = (db.channels || []).filter(c => c.enabled !== false && c.isActive !== false && isTamil(c));
+  const chs = (DB.channels || []).filter(c =>
+    c.enabled !== false && c.isActive !== false && isTamil(c)
+  );
   res.setHeader('Content-Type',  'application/x-mpegurl; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-store');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.send(generateM3U(chs, { tamilOnly: true, req }));
 });
 
 app.get('/api/playlist/source/:sourceId/tamil.m3u', (req, res) => {
-  const db  = readDB();
-  const chs = (db.channels || []).filter(c =>
+  const chs = (DB.channels || []).filter(c =>
     c.sourceId === req.params.sourceId && c.enabled !== false && isTamil(c)
   );
   res.setHeader('Content-Type',  'application/x-mpegurl; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-store');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.send(generateM3U(chs, { tamilOnly: true, req }));
 });
 
 app.get('/api/playlist/source/:sourceId.m3u', (req, res) => {
-  const db     = readDB();
-  const source = (db.sources || []).find(s => s.id === req.params.sourceId);
+  const source = (DB.sources || []).find(s => s.id === req.params.sourceId);
   const tamil  = req.query.tamil === '1' || !!(source?.tamilFilter);
-  const chs    = (db.channels || []).filter(c => c.sourceId === req.params.sourceId && c.enabled !== false);
+  const chs    = (DB.channels || []).filter(c =>
+    c.sourceId === req.params.sourceId && c.enabled !== false
+  );
   res.setHeader('Content-Type',  'application/x-mpegurl; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-store');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.send(generateM3U(chs, { tamilOnly: tamil, req }));
 });
 
 app.get('/api/playlist/:id.m3u', (req, res) => {
-  const db       = readDB();
-  const playlist = (db.playlists || []).find(p => p.id === req.params.id);
+  const playlist = (DB.playlists || []).find(p => p.id === req.params.id);
   const tamilQS  = req.query.tamil === '1';
 
   let chs;
   if (playlist) {
-    const chMap   = new Map((db.channels || []).map(c => [c.id, c]));
+    const chMap   = new Map((DB.channels || []).map(c => [c.id, c]));
     const pinned  = (playlist.pinnedChannels  || []).map(id => chMap.get(id)).filter(Boolean);
     const blocked = new Set(playlist.blockedChannels || []);
-    const baseChs = (db.channels || []).filter(c =>
+    const base    = (DB.channels || []).filter(c =>
       !blocked.has(c.id) &&
       !pinned.find(p => p.id === c.id) &&
       c.enabled  !== false &&
@@ -457,14 +645,14 @@ app.get('/api/playlist/:id.m3u', (req, res) => {
       (!playlist.tamilOnly || isTamil(c)) &&
       (!playlist.includeGroups?.length || playlist.includeGroups.includes(c.group))
     );
-    chs = [...pinned, ...baseChs];
+    chs = [...pinned, ...base];
   } else {
-    const db2 = readDB();
-    chs = (db2.channels || []).filter(c => c.enabled !== false && c.isActive !== false);
+    chs = (DB.channels || []).filter(c => c.enabled !== false && c.isActive !== false);
   }
 
   res.setHeader('Content-Type',  'application/x-mpegurl; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-store');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.send(generateM3U(chs, { tamilOnly: tamilQS, req }));
 });
 
@@ -472,19 +660,18 @@ app.get('/api/playlist/:id.m3u', (req, res) => {
 // REDIRECT — pure 302 to clean URL (strips pipe headers)
 // =============================================================================
 app.get('/redirect/:id', (req, res) => {
-  const db = readDB();
-  const ch = (db.channels || []).find(c => c.id === req.params.id);
+  const ch = (DB.channels || []).find(c => c.id === req.params.id);
 
-  if (!ch)      return res.status(404).json({ error: 'Channel not found' });
+  if (!ch)       return res.status(404).json({ error: 'Channel not found' });
   if (isDRM(ch)) return res.status(410).json({ error: 'DRM channel — stripped' });
 
-  const sourceUrl           = ch.rawUrl || ch.url || '';
+  const sourceUrl         = ch.rawUrl || ch.url || '';
   if (!sourceUrl) return res.status(400).json({ error: 'No URL' });
 
-  const { url: cleanUrl }   = parsePipeUrl(sourceUrl);
+  const { url: cleanUrl } = parsePipeUrl(sourceUrl);
   if (!cleanUrl) return res.status(400).json({ error: 'Could not parse URL' });
 
-  // If this is a redirect-chain HLS, forward to HLS proxy instead of 302
+  // If redirect-chain HLS — forward to HLS proxy
   if (isHlsRedirectUrl(cleanUrl)) {
     const publicBase = getPublicBase(req);
     return res.redirect(302, `${publicBase}/hls/${ch.id}/playlist.m3u8`);
@@ -498,40 +685,40 @@ app.get('/redirect/:id', (req, res) => {
 // HEALTH CHECK API
 // =============================================================================
 app.get('/api/health/:id', async (req, res) => {
-  const db = readDB();
-  const ch = (db.channels || []).find(c => c.id === req.params.id);
+  const ch = (DB.channels || []).find(c => c.id === req.params.id);
   if (!ch) return res.status(404).json({ error: 'Not found' });
-  if (isDRM(ch)) return res.json({ id: ch.id, name: ch.name, ok: null, note: 'DRM — stripped' });
 
-  const sourceUrl          = ch.rawUrl || ch.url || '';
-  const { url: cleanUrl }  = parsePipeUrl(sourceUrl);
-  const needsProxy         = isHlsRedirectUrl(cleanUrl);
-  const result             = await headCheck(sourceUrl, 8000);
+  const sourceUrl         = ch.rawUrl || ch.url || '';
+  const { url: cleanUrl } = parsePipeUrl(sourceUrl);
+  const needsProxy        = isHlsRedirectUrl(cleanUrl);
+  const result            = await headCheck(sourceUrl, 8000);
 
+  // Update in-memory
   ch.lastHealth  = result.ok;
   ch.lastLatency = result.latency;
   ch.lastChecked = new Date().toISOString();
-  writeDB(db);
+  writeDisk(DB);
 
   res.json({
-    id          : ch.id,
-    name        : ch.name,
-    ok          : result.ok,
-    status      : result.status,
-    latency     : result.latency,
-    contentType : result.contentType,
-    isTamil     : isTamil(ch),
-    routing     : needsProxy ? 'hls-proxy' : '302-direct',
-    proxyUrl    : needsProxy ? `/hls/${ch.id}/playlist.m3u8` : `/redirect/${ch.id}`,
+    id         : ch.id,
+    name       : ch.name,
+    ok         : result.ok,
+    status     : result.status,
+    latency    : result.latency,
+    contentType: result.contentType,
+    isTamil    : isTamil(ch),
+    routing    : needsProxy ? 'hls-proxy' : '302-direct',
+    proxyUrl   : needsProxy
+      ? `${getPublicBase(req)}/hls/${ch.id}/playlist.m3u8`
+      : `/redirect/${ch.id}`,
   });
 });
 
 app.post('/api/health/batch', async (req, res) => {
-  const db  = readDB();
-  const ids = (req.body.ids || []).slice(0, 100);
-  const chs = ids.length
-    ? (db.channels || []).filter(c => ids.includes(c.id) && !isDRM(c))
-    : (db.channels || []).filter(c => !isDRM(c)).slice(0, 50);
+  const ids  = (req.body.ids || []).slice(0, 100);
+  const chs  = ids.length
+    ? (DB.channels || []).filter(c => ids.includes(c.id) && !isDRM(c))
+    : (DB.channels || []).filter(c => !isDRM(c)).slice(0, 50);
 
   const results = await Promise.all(
     chs.map(async ch => {
@@ -544,7 +731,7 @@ app.post('/api/health/batch', async (req, res) => {
     })
   );
 
-  writeDB(db);
+  writeDisk(DB);
   const byId = {};
   results.forEach(r => { byId[r.id] = r; });
   res.json({ checked: results.length, results: byId });
@@ -557,7 +744,7 @@ app.get('/proxy/cors', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: '?url= required' });
   try {
-    const text = await fetchText(decodeURIComponent(url));
+    const text = await fetchText(decodeURIComponent(String(url)));
     res.setHeader('Content-Type',                'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control',               'no-cache');
@@ -568,90 +755,99 @@ app.get('/proxy/cors', async (req, res) => {
 });
 
 // =============================================================================
-// API — CRUD
+// SYNC — receives full state from frontend and saves
 // =============================================================================
 app.post('/api/sync', auth, (req, res) => {
   try {
-    const incoming = req.body;
-    const db       = readDB();
+    const incoming = req.body || {};
 
-    if (incoming.channels) {
+    // Merge incoming into existing DB (don't lose server-only data)
+    if (Array.isArray(incoming.channels)) {
       incoming.channels = incoming.channels
-        .filter(c => !isDRM(c))
+        .filter(c => c && !isDRM(c) && (c.url || c.rawUrl))
         .map(c => {
-          const raw              = c.rawUrl || c.url || '';
-          const { url: cleanUrl } = parsePipeUrl(raw);
-          return { ...c, rawUrl: raw, url: cleanUrl };
+          const raw           = c.rawUrl || c.url || '';
+          const { url: clean } = parsePipeUrl(raw);
+          return { ...c, rawUrl: raw, url: clean };
         });
     }
 
     const merged = {
       ...EMPTY_DB,
       ...incoming,
-      modifications: incoming.modifications || db.modifications || null,
-      settings     : incoming.settings      || db.settings      || { apiKey: API_KEY },
+      modifications: incoming.modifications || DB.modifications || null,
+      settings     : incoming.settings      || DB.settings      || { apiKey: API_KEY },
+      savedAt      : Date.now(),
     };
 
     writeDB(merged);
 
-    const chs = merged.channels || [];
+    // Save to Supabase in background
+    scheduleSbSync();
+
+    const chs = DB.channels || [];
     res.json({
       success  : true,
       channels : chs.length,
       tamil    : chs.filter(c => isTamil(c)).length,
-      sources  : (merged.sources   || []).length,
-      message  : `Synced ${chs.length} channels`,
+      sources  : (DB.sources   || []).length,
+      playlists: (DB.playlists || []).length,
+      savedAt  : merged.savedAt,
     });
   } catch (e) {
+    console.error('[SYNC]', e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
+// =============================================================================
+// DB ENDPOINT — returns full DB for frontend startup merge
+// =============================================================================
 app.get('/api/db', (req, res) => {
-  const db = readDB();
   res.setHeader('Cache-Control',               'no-cache, no-store');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.json({
-    channels      : db.channels      || [],
-    sources       : db.sources       || [],
-    groups        : db.groups        || [],
-    playlists     : db.playlists     || [],
-    modifications : db.modifications || null,
-    ts            : Date.now(),
+    channels     : DB.channels      || [],
+    sources      : DB.sources       || [],
+    groups       : DB.groups        || [],
+    playlists    : DB.playlists     || [],
+    modifications: DB.modifications || null,
+    savedAt      : DB.savedAt       || 0,
+    ts           : Date.now(),
   });
 });
 
 app.get('/api/stats', (req, res) => {
-  const db  = readDB();
-  const chs = db.channels || [];
+  const chs = DB.channels || [];
   res.json({
     channels  : chs.length,
     tamil     : chs.filter(c => isTamil(c)).length,
-    sources   : (db.sources   || []).length,
-    groups    : (db.groups    || []).length,
-    playlists : (db.playlists || []).length,
+    sources   : (DB.sources   || []).length,
+    groups    : (DB.groups    || []).length,
+    playlists : (DB.playlists || []).length,
     uptime    : Math.floor(process.uptime()),
     memory    : Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+    supabase  : SUPABASE_ON,
     hlsProxy  : `port ${HLS_PORT}`,
   });
 });
 
+// Channels list API
 app.get('/api/channels', (req, res) => {
-  const db    = readDB();
-  const page  = parseInt(req.query.page  || '1',   10);
-  const limit = parseInt(req.query.limit || '100', 10);
-  const q     = (req.query.q    || '').toLowerCase();
-  const group = req.query.group || '';
+  const page  = parseInt(String(req.query.page  || '1'),   10);
+  const limit = parseInt(String(req.query.limit || '100'), 10);
+  const q     = String(req.query.q    || '').toLowerCase();
+  const group = String(req.query.group || '');
   const tamil = req.query.tamil === '1';
+  const publicBase = getPublicBase(req);
 
-  let chs = db.channels || [];
+  let chs = DB.channels || [];
   if (q)     chs = chs.filter(c => (c.name || '').toLowerCase().includes(q) || (c.group || '').toLowerCase().includes(q));
   if (group) chs = chs.filter(c => c.group === group);
   if (tamil) chs = chs.filter(c => isTamil(c));
 
   const total = chs.length;
   const paged = chs.slice((page - 1) * limit, page * limit);
-  const publicBase = getPublicBase(req);
 
   res.json({
     total, page, limit,
@@ -660,20 +856,17 @@ app.get('/api/channels', (req, res) => {
       const { url: cleanUrl } = parsePipeUrl(ch.rawUrl || ch.url || '');
       const needsProxy        = isHlsRedirectUrl(cleanUrl);
       return {
-        id          : ch.id,
-        name        : ch.name,
-        group       : ch.group,
-        url         : ch.url,
-        rawUrl      : ch.rawUrl,
-        logo        : ch.logo,
-        enabled     : ch.enabled,
-        isActive    : ch.isActive,
-        isTamil     : isTamil(ch),
-        lastHealth  : ch.lastHealth,
-        lastLatency : ch.lastLatency,
-        streamType  : needsProxy ? 'hls-proxy' : (ch.streamType || 'direct'),
-        sourceId    : ch.sourceId,
-        playUrl     : needsProxy
+        id         : ch.id,
+        name       : ch.name,
+        group      : ch.group,
+        logo       : ch.logo,
+        isTamil    : isTamil(ch),
+        enabled    : ch.enabled,
+        isActive   : ch.isActive,
+        lastHealth : ch.lastHealth,
+        lastLatency: ch.lastLatency,
+        streamType : needsProxy ? 'hls-proxy' : (ch.streamType || 'direct'),
+        playUrl    : needsProxy
           ? `${publicBase}/hls/${ch.id}/playlist.m3u8`
           : `/redirect/${ch.id}`,
       };
@@ -681,59 +874,79 @@ app.get('/api/channels', (req, res) => {
   });
 });
 
+// Channel CRUD
 app.patch('/api/channel/:id', auth, (req, res) => {
-  const db = readDB();
-  const ch = (db.channels || []).find(c => c.id === req.params.id);
+  const ch = (DB.channels || []).find(c => c.id === req.params.id);
   if (!ch) return res.status(404).json({ error: 'Not found' });
-  if (isDRM({ ...ch, ...req.body })) return res.status(400).json({ error: 'Cannot set DRM fields' });
   Object.assign(ch, req.body);
-  writeDB(db);
+  writeDisk(DB); scheduleSbSync();
   res.json({ success: true, channel: ch });
 });
 
 app.delete('/api/channel/:id', auth, (req, res) => {
-  const db    = readDB();
-  db.channels = (db.channels || []).filter(c => c.id !== req.params.id);
-  writeDB(db);
+  DB.channels = (DB.channels || []).filter(c => c.id !== req.params.id);
+  writeDisk(DB); scheduleSbSync();
   res.json({ success: true });
 });
 
-app.get('/api/sources',       auth, (req, res) => { const db = readDB(); res.json(db.sources || []); });
+// Source CRUD
+app.get('/api/sources',       auth, (req, res) => res.json(DB.sources || []));
 app.patch('/api/source/:id',  auth, (req, res) => {
-  const db  = readDB();
-  const src = (db.sources || []).find(s => s.id === req.params.id);
+  const src = (DB.sources || []).find(s => s.id === req.params.id);
   if (!src) return res.status(404).json({ error: 'Not found' });
   Object.assign(src, req.body);
-  writeDB(db);
+  writeDisk(DB); scheduleSbSync();
   res.json({ success: true, source: src });
 });
 app.delete('/api/source/:id', auth, (req, res) => {
-  const db    = readDB();
-  db.sources  = (db.sources  || []).filter(s => s.id !== req.params.id);
-  db.channels = (db.channels || []).filter(c => c.sourceId !== req.params.id);
-  writeDB(db);
+  DB.sources  = (DB.sources  || []).filter(s => s.id !== req.params.id);
+  DB.channels = (DB.channels || []).filter(c => c.sourceId !== req.params.id);
+  writeDisk(DB); scheduleSbSync();
   res.json({ success: true });
 });
 
+// Test channel
 app.get('/api/test/:id', auth, async (req, res) => {
-  const db = readDB();
-  const ch = (db.channels || []).find(c => c.id === req.params.id);
+  const ch = (DB.channels || []).find(c => c.id === req.params.id);
   if (!ch) return res.status(404).json({ error: 'Not found' });
-  const sourceUrl          = ch.rawUrl || ch.url || '';
-  const { url: cleanUrl }  = parsePipeUrl(sourceUrl);
-  const needsProxy         = isHlsRedirectUrl(cleanUrl);
-  const r                  = await headCheck(sourceUrl, 10000);
-  const publicBase         = getPublicBase(req);
+  const sourceUrl         = ch.rawUrl || ch.url || '';
+  const { url: cleanUrl } = parsePipeUrl(sourceUrl);
+  const needsProxy        = isHlsRedirectUrl(cleanUrl);
+  const r                 = await headCheck(sourceUrl, 10000);
+  const publicBase        = getPublicBase(req);
   res.json({
-    success     : r.ok,
-    rawUrl      : sourceUrl,
+    success    : r.ok,
+    rawUrl     : sourceUrl,
     cleanUrl,
-    status      : r.status,
-    latency     : r.latency,
-    contentType : r.contentType,
-    routing     : needsProxy ? 'hls-proxy' : '302-direct',
-    playUrl     : needsProxy ? `${publicBase}/hls/${ch.id}/playlist.m3u8` : `/redirect/${ch.id}`,
+    status     : r.status,
+    latency    : r.latency,
+    contentType: r.contentType,
+    routing    : needsProxy ? 'hls-proxy' : '302-direct',
+    playUrl    : needsProxy
+      ? `${publicBase}/hls/${ch.id}/playlist.m3u8`
+      : `/redirect/${ch.id}`,
   });
+});
+
+// Export / Import
+app.get('/api/export', auth, (req, res) => {
+  res.setHeader('Content-Type',        'application/json');
+  res.setHeader('Content-Disposition', 'attachment; filename="iptv-backup.json"');
+  res.json(DB);
+});
+
+app.post('/api/import', auth, (req, res) => {
+  try {
+    const data = req.body;
+    if (!data || !Array.isArray(data.channels)) {
+      return res.status(400).json({ error: 'Invalid backup format' });
+    }
+    writeDB(data);
+    scheduleSbSync();
+    res.json({ success: true, channels: DB.channels.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // =============================================================================
@@ -749,18 +962,17 @@ app.get('*', (req, res) => {
 });
 
 // =============================================================================
-// KEEPALIVE (Render free tier)
+// KEEPALIVE (Render free tier — ping every 14 min)
 // =============================================================================
 function startKeepalive() {
-  if (!SELF_URL || SELF_URL.includes('localhost')) {
-    console.log('[KEEPALIVE] Skipped — no RENDER_EXTERNAL_URL');
-    return;
-  }
+  if (!SELF_URL || SELF_URL.includes('localhost')) return;
   const pingUrl = `${SELF_URL.startsWith('http') ? SELF_URL : 'https://' + SELF_URL}/health`;
   const ping    = () => {
     const lib = pingUrl.startsWith('https') ? https : http;
-    lib.get(pingUrl, { timeout: 10000 }, r => { console.log(`[KEEPALIVE] ✓ ${r.statusCode}`); r.resume(); })
-       .on('error', e => console.warn(`[KEEPALIVE] ✗ ${e.message}`));
+    lib.get(pingUrl, { timeout: 10000 }, r => {
+      console.log(`[KEEPALIVE] ✓ ${r.statusCode}`);
+      r.resume();
+    }).on('error', e => console.warn(`[KEEPALIVE] ✗ ${e.message}`));
   };
   setTimeout(ping, 30000);
   setInterval(ping, 14 * 60 * 1000);
@@ -770,23 +982,27 @@ function startKeepalive() {
 // =============================================================================
 // START
 // =============================================================================
-app.listen(PORT, '0.0.0.0', () => {
-  const db  = readDB();
-  const chs = db.channels || [];
-  console.log(`
+initDB().then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    const chs = DB.channels || [];
+    console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║  📺  IPTV Manager v15 — Smart Routing                    ║
+║  📺  IPTV Manager v16 — Production Ready                 ║
 ╠══════════════════════════════════════════════════════════╣
-║  Main Port : ${String(PORT).padEnd(43)}║
-║  HLS Proxy : ${String(HLS_PORT + ' (via /hls/* forwarding)').padEnd(43)}║
+║  Port      : ${String(PORT).padEnd(43)}║
+║  HLS Proxy : ${String(HLS_PORT + ' (port 10001)').padEnd(43)}║
 ║  Channels  : ${String(chs.length).padEnd(43)}║
 ║  Tamil     : ${String(chs.filter(c => isTamil(c)).length).padEnd(43)}║
+║  Supabase  : ${String(SUPABASE_ON ? 'enabled ✓' : 'disabled (disk only)').padEnd(43)}║
 ║  DB        : ${String(DB_FILE).substring(0, 43).padEnd(43)}║
 ╠══════════════════════════════════════════════════════════╣
-║  Direct streams  → rawUrl with pipe headers preserved    ║
-║  HLS redirects   → /hls/:id/playlist.m3u8 (proxy)       ║
-║  /redirect/:id   → clean 302 (pipe headers stripped)     ║
+║  /api/playlist/all.m3u       → all channels              ║
+║  /api/playlist/tamil.m3u     → Tamil only                ║
+║  /api/playlist/default.m3u   → smart default             ║
+║  /redirect/:id               → pure 302                  ║
+║  /hls/:id/playlist.m3u8      → HLS proxy (via 10001)    ║
 ╚══════════════════════════════════════════════════════════╝
 `);
-  startKeepalive();
+    startKeepalive();
+  });
 });
