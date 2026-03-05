@@ -5,7 +5,6 @@ services:
     dockerfilePath: ./Dockerfile
     plan: free
 
-    # Persistent disk — DB survives redeploys
     disk:
       name: iptv-data
       mountPath: /data
@@ -14,6 +13,8 @@ services:
     envVars:
       - key: PORT
         value: "10000"
+      - key: HLS_PORT
+        value: "10001"
       - key: NODE_ENV
         value: production
       - key: DB_FILE
