@@ -1,6 +1,12 @@
 /**
- * parser.ts — Central parsing + M3U generation
- * Uses universalParse for all source imports
+ * parser.ts — Central orchestrator
+ *
+ * Exports:
+ *   parseAny()           — parse any content → Channel[]
+ *   fetchSourceContent() — fetch a URL robustly
+ *   generateM3U()        — generate M3U playlist from channels
+ *   generateTamilM3U()   — generate Tamil-only M3U
+ *   isTamilChannel()     — Tamil detection
  */
 
 import { Channel, PlaylistConfig, Source } from '../types';
@@ -9,7 +15,9 @@ import { universalParse, isTamilChannel } from './universalParser';
 export { isTamilChannel };
 
 // ─── Robust URL fetcher ───────────────────────────────────────────────────────
-const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const CORS_PROXIES = [
   (u: string) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
@@ -17,29 +25,38 @@ const CORS_PROXIES = [
   (u: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
 ];
 
-function isGithubRaw(url: string): boolean {
+function isPublicCDN(url: string): boolean {
   const u = url.toLowerCase();
-  return u.includes('raw.githubusercontent.com') || u.includes('gist.githubusercontent.com');
+  return (
+    u.includes('raw.githubusercontent.com') ||
+    u.includes('gist.githubusercontent.com') ||
+    u.includes('workers.dev') ||
+    u.includes('github.io')
+  );
 }
 
 function getServerProxy(url: string): string | null {
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes(':517')) {
-    return null;
-  }
+  if (typeof window === 'undefined') return null;
+  const origin = window.location.origin;
+  if (
+    !origin ||
+    origin.includes('localhost') ||
+    origin.includes('127.0.0.1') ||
+    origin.includes(':517')
+  ) return null;
   return `${origin}/proxy/cors?url=${encodeURIComponent(url)}`;
 }
 
-async function tryFetch(url: string): Promise<string> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 12000);
+async function tryFetch(url: string, timeoutMs = 12000): Promise<string> {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const resp = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { 'User-Agent': BROWSER_UA, 'Accept': '*/*' },
+      signal:  ctrl.signal,
+      headers: { 'User-Agent': BROWSER_UA, Accept: '*/*' },
     });
     clearTimeout(timer);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
     return await resp.text();
   } catch (e) {
     clearTimeout(timer);
@@ -47,53 +64,59 @@ async function tryFetch(url: string): Promise<string> {
   }
 }
 
-async function unwrapAllOrigins(raw: string): Promise<string> {
-  if (!raw.trimStart().startsWith('{')) return raw;
+async function unwrap(raw: string): Promise<string> {
+  const t = raw.trimStart();
+  if (!t.startsWith('{')) return raw;
   try {
-    const j = JSON.parse(raw);
+    const j = JSON.parse(t) as Record<string, unknown>;
     if (typeof j.contents === 'string') return j.contents;
   } catch { /* ignore */ }
   return raw;
 }
 
 export async function fetchSourceContent(url: string): Promise<string> {
-  const errors: string[] = [];
+  const errs: string[] = [];
 
-  // 1. Server-side CORS proxy (deployed server — best 403 bypass)
+  // 1. Server-side CORS proxy (deployed app — best anti-403 bypass)
   const serverProxy = getServerProxy(url);
   if (serverProxy) {
     try { return await tryFetch(serverProxy); }
-    catch (e) { errors.push(`server-proxy: ${(e as Error).message}`); }
+    catch (e) { errs.push(`server-proxy: ${(e as Error).message}`); }
   }
 
-  // 2. Direct fetch — always works for GitHub raw, public CDNs, workers.dev
-  if (isGithubRaw(url) || url.includes('workers.dev')) {
+  // 2. Direct — always works for GitHub, workers.dev (CORS headers present)
+  if (isPublicCDN(url)) {
     try { return await tryFetch(url); }
-    catch (e) { errors.push(`direct: ${(e as Error).message}`); }
+    catch (e) { errs.push(`direct-cdn: ${(e as Error).message}`); }
   }
 
-  // 3. Try direct anyway
+  // 3. Direct attempt for any URL
   try { return await tryFetch(url); }
-  catch (e) { errors.push(`direct: ${(e as Error).message}`); }
+  catch (e) { errs.push(`direct: ${(e as Error).message}`); }
 
   // 4. CORS proxies
-  for (const makeProxy of CORS_PROXIES) {
-    const proxyUrl = makeProxy(url);
+  for (const make of CORS_PROXIES) {
     try {
-      const raw = await tryFetch(proxyUrl);
-      return await unwrapAllOrigins(raw);
+      const raw = await tryFetch(make(url));
+      return await unwrap(raw);
     } catch (e) {
-      errors.push(`proxy(${proxyUrl.substring(0, 40)}): ${(e as Error).message}`);
+      errs.push(`proxy: ${(e as Error).message}`);
     }
   }
 
-  throw new Error(`Failed to fetch "${url}" via all methods.\n${errors.join('\n')}`);
+  throw new Error(
+    `Failed to fetch "${url}" via all methods.\n${errs.slice(0, 4).join('\n')}`
+  );
 }
 
 // ─── Main parse entry point ───────────────────────────────────────────────────
 /**
- * Parse any content string (M3U, JSON, plain URLs, PHP/worker response)
- * into Channel[] — strips DRM automatically.
+ * Parse any content (M3U, JSON, plain URLs, PHP/worker response) → Channel[]
+ * Automatically detects format. Strips DRM channels.
+ *
+ * Examples:
+ *   parseAny('#EXTM3U\n#EXTINF:-1 tvg-id="9XJalwa.in@SD",9X Jalwa (1080p)\nhttps://b.jsrdn.com/...', 'src_1')
+ *   parseAny('[{"id":"ThanthiOne.in","name":"Thanthi One","streamUrls":["https://..."]}]', 'src_2')
  */
 export function parseAny(content: string, sourceId: string): Channel[] {
   return universalParse(content, sourceId);
@@ -101,10 +124,13 @@ export function parseAny(content: string, sourceId: string): Channel[] {
 
 // ─── M3U generator ───────────────────────────────────────────────────────────
 /**
- * Generate an M3U playlist from channels.
- * - Uses /redirect/:id for all streams (pure 302)
- * - Multiple sources for same name → multiple entries
- * - Respects tamilOnly and group filters from playlist config
+ * Generate M3U playlist from channels.
+ * Uses rawUrl (exact source URL with pipe headers) for maximum player compatibility.
+ *
+ * Generated URL format:
+ *   Direct streams   → exact rawUrl (e.g. https://stream.m3u8?token=abc|User-Agent=...)
+ *   Redirect streams → /redirect/:id (pure 302 on server)
+ *   HLS redirects    → /hls/:id/playlist.m3u8 (proxy on server)
  */
 export function generateM3U(
   channels: Channel[],
@@ -112,88 +138,90 @@ export function generateM3U(
   playlist?: PlaylistConfig,
   sources?: Source[]
 ): string {
-  let filtered = channels.filter(c => c.isActive !== false && c.enabled !== false);
+  let list = channels.filter(c => c.isActive !== false && c.enabled !== false);
 
   if (playlist) {
-    // Tamil filter
+    // Tamil-only filter
     if (playlist.tamilOnly) {
-      filtered = filtered.filter(c =>
+      list = list.filter(c =>
         isTamilChannel(String(c.name || ''), String(c.group || ''), String(c.language || ''))
       );
     }
 
-    // Source tamil filters
+    // Per-source Tamil filters
     if (sources && sources.length > 0) {
-      filtered = filtered.filter(c => {
+      list = list.filter(c => {
         const src = sources.find(s => s.id === c.sourceId);
         if (!src || !src.tamilFilter) return true;
-        return isTamilChannel(String(c.name || ''), String(c.group || ''), String(c.language || ''));
+        return isTamilChannel(
+          String(c.name || ''), String(c.group || ''), String(c.language || '')
+        );
       });
     }
 
-    // Include groups filter
+    // Include groups
     if (playlist.includeGroups && playlist.includeGroups.length > 0) {
-      filtered = filtered.filter(c => playlist.includeGroups.includes(String(c.group || '')));
+      list = list.filter(c => playlist.includeGroups.includes(String(c.group || '')));
     }
 
-    // Exclude groups filter
+    // Exclude groups
     if (playlist.excludeGroups && playlist.excludeGroups.length > 0) {
-      filtered = filtered.filter(c => !playlist.excludeGroups.includes(String(c.group || '')));
+      list = list.filter(c => !playlist.excludeGroups.includes(String(c.group || '')));
     }
 
     // Blocked channels
     if (playlist.blockedChannels && playlist.blockedChannels.length > 0) {
-      filtered = filtered.filter(c => !playlist.blockedChannels.includes(c.id));
+      list = list.filter(c => !playlist.blockedChannels.includes(c.id));
     }
 
     // Pinned channels first
     if (playlist.pinnedChannels && playlist.pinnedChannels.length > 0) {
-      const pinned = filtered.filter(c => playlist.pinnedChannels.includes(c.id));
-      const rest   = filtered.filter(c => !playlist.pinnedChannels.includes(c.id));
-      filtered = [...pinned, ...rest];
+      const pinned = list.filter(c =>  playlist.pinnedChannels.includes(c.id));
+      const rest   = list.filter(c => !playlist.pinnedChannels.includes(c.id));
+      list = [...pinned, ...rest];
     }
   }
 
-  // Sort by order
-  filtered.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  // Sort by order field
+  list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
   let m3u = '#EXTM3U\r\n';
 
-  for (const ch of filtered) {
+  for (const ch of list) {
     const name    = String(ch.name    || 'Unknown Channel');
     const logo    = String(ch.logo    || '');
     const group   = String(ch.group   || 'General');
-    const tvgId   = String(ch.tvgId   || ch.id || '');
+    const tvgId   = String(ch.tvgId   || ch.id   || '');
     const tvgName = String(ch.tvgName || name);
 
-    // Use EXACT original URL (rawUrl) — preserves pipe headers like |User-Agent=...|Referer=...
-    // Fall back to clean url if rawUrl not available
+    // Use EXACT original URL (rawUrl) — preserves pipe headers like:
+    //   https://stream.m3u8?token=abc|User-Agent=ReactNativeVideo/9.3.0|Referer=https://fancode.com/
+    // Most players (TiviMate, VLC, IPTV Smarters, Kodi) read pipe headers natively.
     const streamUrl = String(ch.rawUrl || ch.url || '');
     if (!streamUrl) continue;
 
     m3u += `#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${logo}" group-title="${group}",${name}\r\n`;
 
-    // Re-emit VLC/player header opts if pipe headers were present
-    if (ch.rawUrl && ch.rawUrl !== ch.url) {
-      // The rawUrl already contains |User-Agent=...|Referer=... — use as-is
-      // Most players (VLC, TiviMate, Kodi, ExoPlayer) read pipe-headers natively
-      m3u += `${streamUrl}\r\n`;
-    } else {
-      // No pipe headers — emit #EXTVLCOPT for players that prefer explicit opts
+    // Emit VLC options for players that prefer explicit directives
+    const hasPipeHeaders = ch.rawUrl && ch.rawUrl !== ch.url && ch.rawUrl.includes('|');
+    if (!hasPipeHeaders) {
       if (ch.userAgent) m3u += `#EXTVLCOPT:http-user-agent=${ch.userAgent}\r\n`;
       if (ch.referer)   m3u += `#EXTVLCOPT:http-referrer=${ch.referer}\r\n`;
-      m3u += `${streamUrl}\r\n`;
     }
+
+    m3u += `${streamUrl}\r\n`;
   }
 
   return m3u;
 }
 
-// ─── Tamil source playlist generator ─────────────────────────────────────────
+// ─── Tamil-only M3U generator ─────────────────────────────────────────────────
 export function generateTamilM3U(channels: Channel[], serverUrl: string): string {
-  const tamilChannels = channels.filter(c =>
-    (c.isActive !== false || c.enabled !== false) &&
-    isTamilChannel(String(c.name || ''), String(c.group || ''), String(c.language || ''))
+  const tamil = channels.filter(
+    c =>
+      c.isActive !== false &&
+      c.enabled  !== false &&
+      isTamilChannel(String(c.name || ''), String(c.group || ''), String(c.language || ''))
   );
-  return generateM3U(tamilChannels, serverUrl);
+  return generateM3U(tamil, serverUrl);
 }
