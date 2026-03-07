@@ -5,6 +5,45 @@ const ss = (v: unknown): string =>
   typeof v === 'string' ? v.trim() :
   typeof v === 'number' ? String(v) : '';
 
+// ─── M3U Parsed Item Interface ────────────────────────────────────────────────
+export interface M3uParsedItem {
+  name?: string;
+  tvg?: {
+    id?: string;
+    name?: string;
+    logo?: string;
+    url?: string;
+    rec?: string;
+    shift?: string;
+  };
+  group?: {
+    title?: string;
+  };
+  http?: {
+    referrer?: string;
+    'user-agent'?: string;
+  };
+  url?: string;
+  raw?: string;
+  line?: number;
+  catchup?: {
+    type?: string;
+    days?: string;
+    source?: string;
+  };
+  timeshift?: string;
+  status?: string;
+}
+
+// ─── M3U Parsed Playlist Interface ────────────────────────────────────────────
+export interface M3uParsedPlaylist {
+  header?: {
+    attrs?: Record<string, string>;
+    raw?: string;
+  };
+  items: M3uParsedItem[];
+}
+
 // ─── Raw JSON stream interface ────────────────────────────────────────────────
 export interface RawJsonStream {
   // ── URL fields ──────────────────────────────────────────────
@@ -17,7 +56,7 @@ export interface RawJsonStream {
   playbackUrl?: unknown;
 
   // ── URL arrays (streamUrls format) ─────────────────────────
-  streamUrls?: unknown;      // [ "https://..." ]  ← YOUR FORMAT
+  streamUrls?: unknown;
   urls?: unknown;
   streams?: unknown;
 
@@ -34,7 +73,7 @@ export interface RawJsonStream {
 
   // ── Logo fields ─────────────────────────────────────────────
   logo?: unknown;
-  logoUrl?: unknown;         // ← YOUR FORMAT
+  logoUrl?: unknown;
   logo_url?: unknown;
   icon?: unknown;
   image?: unknown;
@@ -46,7 +85,7 @@ export interface RawJsonStream {
 
   // ── Group / Category ────────────────────────────────────────
   group?: unknown;
-  category?: unknown;        // ← YOUR FORMAT (used as group)
+  category?: unknown;
   genre?: unknown;
   groupTitle?: unknown;
   group_title?: unknown;
@@ -54,7 +93,7 @@ export interface RawJsonStream {
   type?: unknown;
 
   // ── ID / TVG ────────────────────────────────────────────────
-  id?: unknown;              // ← YOUR FORMAT (e.g. "ThanthiOne.in")
+  id?: unknown;
   tvgId?: unknown;
   tvg_id?: unknown;
   'tvg-id'?: unknown;
@@ -90,6 +129,35 @@ export interface RawJsonStream {
   items?: unknown;
   data?: unknown;
   playlist?: unknown;
+
+  // ── M3U Parsed JSON Format (from parsed M3U stored as JSON) ─
+  tvg?: {
+    id?: string;
+    name?: string;
+    logo?: string;
+    url?: string;
+    rec?: string;
+    shift?: string;
+  };
+  http?: {
+    referrer?: string;
+    'user-agent'?: string;
+  };
+  catchup?: {
+    type?: string;
+    days?: string;
+    source?: string;
+  };
+  timeshift?: unknown;
+  status?: unknown;
+  raw?: unknown;
+  line?: unknown;
+
+  // ── M3U Playlist wrapper (header + items) ───────────────────
+  header?: {
+    attrs?: Record<string, string>;
+    raw?: string;
+  };
 }
 
 // ─── Stream type detector ─────────────────────────────────────────────────────
@@ -108,6 +176,56 @@ function hasDRM(r: RawJsonStream): boolean {
     ss(r.clearKey)     || ss(r.drmKey)      ||
     ss(r.widevineUrl)  || ss(r.inputstream)
   );
+}
+
+// ─── Check if object is M3U parsed playlist format ────────────────────────────
+function isM3uParsedPlaylist(obj: unknown): obj is M3uParsedPlaylist {
+  if (!obj || typeof obj !== 'object') return false;
+  const o = obj as Record<string, unknown>;
+  
+  // Check for header + items structure OR just items with tvg
+  if (o.items && Array.isArray(o.items)) {
+    if (o.items.length > 0) {
+      const firstItem = o.items[0] as Record<string, unknown>;
+      // Must have tvg object and url to be M3U format
+      return (
+        firstItem.tvg !== undefined && 
+        typeof firstItem.tvg === 'object' &&
+        firstItem.url !== undefined
+      );
+    }
+    // Empty items with header present
+    return o.header !== undefined;
+  }
+  return false;
+}
+
+// ─── Check if object is M3U parsed item ───────────────────────────────────────
+function isM3uParsedItem(obj: unknown): obj is M3uParsedItem {
+  if (!obj || typeof obj !== 'object') return false;
+  const o = obj as Record<string, unknown>;
+  return (
+    o.tvg !== undefined &&
+    typeof o.tvg === 'object' &&
+    o.url !== undefined &&
+    typeof o.url === 'string'
+  );
+}
+
+// ─── Convert M3U parsed item to RawJsonStream ─────────────────────────────────
+function m3uItemToRawJsonStream(item: M3uParsedItem): RawJsonStream {
+  return {
+    url: item.url,
+    name: item.name || '',
+    tvg: item.tvg,
+    group: item.group,
+    http: item.http,
+    catchup: item.catchup,
+    timeshift: item.timeshift,
+    status: item.status,
+    raw: item.raw,
+    line: item.line,
+  };
 }
 
 // ─── Field extractors ─────────────────────────────────────────────────────────
@@ -136,7 +254,7 @@ function extractPrimaryUrl(r: RawJsonStream): string {
 
 /** Extract ALL URLs from the item (handles streamUrls array) */
 function extractAllUrls(r: RawJsonStream): string[] {
-  // streamUrls array — YOUR FORMAT
+  // streamUrls array
   if (Array.isArray(r.streamUrls) && r.streamUrls.length > 0) {
     return r.streamUrls.map(u => ss(u)).filter(Boolean);
   }
@@ -155,8 +273,17 @@ function extractAllUrls(r: RawJsonStream): string[] {
 }
 
 function extractName(r: RawJsonStream, idx: number): string {
+  // ═══ M3U parsed format: tvg.name ═══
+  if (r.tvg && typeof r.tvg === 'object' && r.tvg.name) {
+    const tvgName = ss(r.tvg.name);
+    if (tvgName) return tvgName;
+  }
+  
+  // ═══ Direct name field (M3U item.name) ═══
+  const directName = ss(r.name);
+  if (directName) return directName;
+  
   return (
-    ss(r.name)        ||
     ss(r.title)       ||
     ss(r.channel)     ||
     ss(r.channelName) ||
@@ -170,8 +297,14 @@ function extractName(r: RawJsonStream, idx: number): string {
 }
 
 function extractLogo(r: RawJsonStream): string | undefined {
-  return (
-    ss(r.logoUrl)      ||   // ← YOUR FORMAT
+  // ═══ M3U parsed format: tvg.logo ═══
+  if (r.tvg && typeof r.tvg === 'object' && r.tvg.logo) {
+    const tvgLogo = ss(r.tvg.logo);
+    if (tvgLogo) return tvgLogo;
+  }
+  
+  const logo = (
+    ss(r.logoUrl)      ||
     ss(r.logo_url)     ||
     ss(r.logo)         ||
     ss(r.icon)         ||
@@ -180,16 +313,28 @@ function extractLogo(r: RawJsonStream): string | undefined {
     ss(r.poster)       ||
     ss(r.tvgLogo)      ||
     ss(r.tvg_logo)     ||
-    ss(r['tvg-logo'])  ||
-    undefined
+    ss(r['tvg-logo'])
   );
+  
+  return logo || undefined;
 }
 
 function extractGroup(r: RawJsonStream): string {
+  // ═══ M3U parsed format: group.title ═══
+  if (r.group && typeof r.group === 'object' && 'title' in r.group) {
+    const groupTitle = ss((r.group as { title?: unknown }).title);
+    if (groupTitle) return groupTitle;
+  }
+  
+  // String group
+  if (typeof r.group === 'string') {
+    const g = ss(r.group);
+    if (g) return g;
+  }
+  
   const typeVal = ss(r.type);
   return (
-    ss(r.group)        ||
-    ss(r.category)     ||   // ← YOUR FORMAT
+    ss(r.category)     ||
     ss(r.genre)        ||
     ss(r.groupTitle)   ||
     ss(r.group_title)  ||
@@ -200,15 +345,38 @@ function extractGroup(r: RawJsonStream): string {
 }
 
 function extractTvgId(r: RawJsonStream): string | undefined {
-  return (
+  // ═══ M3U parsed format: tvg.id ═══
+  if (r.tvg && typeof r.tvg === 'object' && r.tvg.id) {
+    const tvgId = ss(r.tvg.id);
+    if (tvgId) return tvgId;
+  }
+  
+  const id = (
     ss(r.tvgId)       ||
     ss(r.tvg_id)      ||
     ss(r['tvg-id'])   ||
-    ss(r.id)          ||   // ← YOUR FORMAT (e.g. "ThanthiOne.in")
+    ss(r.id)          ||
     ss(r.channelId)   ||
-    ss(r.channel_id)  ||
-    undefined
+    ss(r.channel_id)
   );
+  
+  return id || undefined;
+}
+
+function extractTvgName(r: RawJsonStream): string | undefined {
+  // ═══ M3U parsed format: tvg.name ═══
+  if (r.tvg && typeof r.tvg === 'object' && r.tvg.name) {
+    const tvgName = ss(r.tvg.name);
+    if (tvgName) return tvgName;
+  }
+  
+  const name = (
+    ss(r.tvgName)     ||
+    ss(r.tvg_name)    ||
+    ss(r['tvg-name'])
+  );
+  
+  return name || undefined;
 }
 
 function extractHeaders(r: RawJsonStream): {
@@ -219,19 +387,29 @@ function extractHeaders(r: RawJsonStream): {
 } {
   const result: { userAgent?: string; referer?: string; cookie?: string; httpHeaders?: Record<string, string> } = {};
 
-  const ua = ss(r.userAgent) || ss(r.user_agent) || ss(r['user-agent']) ||
+  // ═══ M3U parsed format: http object ═══
+  const m3uUserAgent = r.http && typeof r.http === 'object' ? ss(r.http['user-agent']) : '';
+  const m3uReferer = r.http && typeof r.http === 'object' ? ss(r.http.referrer) : '';
+
+  const ua = m3uUserAgent ||
+             ss(r.userAgent) || ss(r.user_agent) || ss(r['user-agent']) ||
              ss(r.headers?.['User-Agent']) || ss(r.headers?.['user-agent']);
   if (ua) result.userAgent = ua;
 
-  const ref = ss(r.referer) || ss(r.headers?.['Referer']) || ss(r.headers?.['referer']);
+  const ref = m3uReferer ||
+              ss(r.referer) || ss(r.headers?.['Referer']) || ss(r.headers?.['referer']);
   if (ref) result.referer = ref;
 
   const ck = ss(r.cookie) || ss(r.headers?.['Cookie']) || ss(r.headers?.['cookie']);
   if (ck) result.cookie = ck;
 
   const all: Record<string, string> = {};
-  if (r.headers     && typeof r.headers     === 'object') Object.entries(r.headers).forEach(([k, v]) => { all[k] = ss(v); });
-  if (r.httpHeaders && typeof r.httpHeaders === 'object') Object.entries(r.httpHeaders).forEach(([k, v]) => { all[k] = ss(v); });
+  if (r.headers && typeof r.headers === 'object') {
+    Object.entries(r.headers).forEach(([k, v]) => { all[k] = ss(v); });
+  }
+  if (r.httpHeaders && typeof r.httpHeaders === 'object') {
+    Object.entries(r.httpHeaders).forEach(([k, v]) => { all[k] = ss(v); });
+  }
   if (Object.keys(all).length > 0) result.httpHeaders = all;
 
   return result;
@@ -241,11 +419,30 @@ function extractHeaders(r: RawJsonStream): {
 function flattenJson(raw: unknown, depth = 0): RawJsonStream[] {
   if (!raw || typeof raw !== 'object' || depth > 8) return [];
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // CHECK FOR M3U PARSED PLAYLIST FORMAT: { header: {...}, items: [...] }
+  // Each item has: name, tvg: { id, name, logo }, group: { title }, url, http
+  // ══════════════════════════════════════════════════════════════════════════
+  if (isM3uParsedPlaylist(raw)) {
+    const playlist = raw as M3uParsedPlaylist;
+    return playlist.items
+      .filter(item => item && item.url)
+      .map(m3uItemToRawJsonStream);
+  }
+
   if (Array.isArray(raw)) {
     const result: RawJsonStream[] = [];
     for (const item of raw) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      
+      // ═══ Check if item is M3U parsed format (has tvg object + url) ═══
+      if (isM3uParsedItem(item)) {
+        result.push(m3uItemToRawJsonStream(item as M3uParsedItem));
+        continue;
+      }
+      
       const obj = item as RawJsonStream;
+      
       // Has a URL or streamUrls → it's a channel item
       if (extractPrimaryUrl(obj)) {
         result.push(obj);
@@ -264,9 +461,19 @@ function flattenJson(raw: unknown, depth = 0): RawJsonStream[] {
 
   // Object with wrapper keys
   const obj = raw as RawJsonStream;
+  
+  // ═══ Check for items array that might be M3U format ═══
+  if (Array.isArray(obj.items)) {
+    if (obj.items.length > 0 && isM3uParsedItem(obj.items[0])) {
+      return (obj.items as M3uParsedItem[])
+        .filter(item => item && item.url)
+        .map(m3uItemToRawJsonStream);
+    }
+    return flattenJson(obj.items, depth + 1);
+  }
+  
   if (Array.isArray(obj.channels)) return flattenJson(obj.channels, depth + 1);
   if (Array.isArray(obj.streams))  return flattenJson(obj.streams,  depth + 1);
-  if (Array.isArray(obj.items))    return flattenJson(obj.items,    depth + 1);
   if (Array.isArray(obj.playlist)) return flattenJson(obj.playlist, depth + 1);
 
   if (obj.data) {
@@ -305,8 +512,11 @@ function parsePipeUrl(raw: string): { url: string; userAgent?: string; referer?:
 // ─── Main parser ─────────────────────────────────────────────────────────────
 export function parseJsonSource(content: string, sourceId: string): Channel[] {
   let parsed: unknown;
-  try { parsed = JSON.parse(content); }
-  catch { throw new Error('Invalid JSON — could not parse source content'); }
+  try { 
+    parsed = JSON.parse(content); 
+  } catch { 
+    throw new Error('Invalid JSON — could not parse source content'); 
+  }
 
   const rawItems = flattenJson(parsed);
   if (rawItems.length === 0) throw new Error('No channels found in JSON');
@@ -324,6 +534,7 @@ export function parseJsonSource(content: string, sourceId: string): Channel[] {
     const logo      = extractLogo(r);
     const group     = extractGroup(r);
     const tvgId     = extractTvgId(r);
+    const tvgName   = extractTvgName(r);
     const hdrs      = extractHeaders(r);
     const language  = ss(r.language) || ss(r.lang) || undefined;
     const country   = ss(r.country) || undefined;
@@ -341,12 +552,12 @@ export function parseJsonSource(content: string, sourceId: string): Channel[] {
       channels.push({
         id:          `${sourceId}_json_${idx}_${ui}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         name,
-        url,                                   // clean URL
-        rawUrl,                                // exact original (with pipe headers if any)
+        url,
+        rawUrl,
         logo,
         group,
         tvgId:       tvgId || undefined,
-        tvgName:     name,
+        tvgName:     tvgName || name,
         language,
         country,
         sourceId,
@@ -367,6 +578,8 @@ export function parseJsonSource(content: string, sourceId: string): Channel[] {
   return channels;
 }
 
+// ─── Utility functions ────────────────────────────────────────────────────────
+
 export function looksLikeJson(content: string): boolean {
   const t = content.trimStart();
   return t.startsWith('[') || t.startsWith('{');
@@ -383,3 +596,83 @@ export function isJsonUrl(url: string): boolean {
     (u.includes('gist.githubusercontent.com') && u.endsWith('.json'))
   );
 }
+
+// ─── Check if JSON is M3U parsed format ───────────────────────────────────────
+export function isM3uParsedJson(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content);
+    return isM3uParsedPlaylist(parsed);
+  } catch {
+    return false;
+  }
+}
+
+// ─── Extract channel info from single M3U item (utility) ─────────────────────
+export function extractChannelInfo(item: M3uParsedItem): {
+  channel: string;
+  logo: string;
+  link: string;
+  group: string;
+  tvgId: string;
+  userAgent: string;
+  referer: string;
+} {
+  return {
+    channel: item.name || item.tvg?.name || '',
+    logo: item.tvg?.logo || '',
+    link: item.url || '',
+    group: item.group?.title || '',
+    tvgId: item.tvg?.id || '',
+    userAgent: item.http?.['user-agent'] || '',
+    referer: item.http?.referrer || '',
+  };
+}
+
+// ─── Parse M3U JSON and extract simple channel list ───────────────────────────
+export function parseM3uJsonToSimpleList(content: string): Array<{
+  channel: string;
+  logo: string;
+  link: string;
+  group: string;
+  tvgId: string;
+}> {
+  try {
+    const parsed = JSON.parse(content);
+    
+    if (isM3uParsedPlaylist(parsed)) {
+      return parsed.items
+        .filter(item => item.url)
+        .map(item => ({
+          channel: item.name || item.tvg?.name || '',
+          logo: item.tvg?.logo || '',
+          link: item.url || '',
+          group: item.group?.title || '',
+          tvgId: item.tvg?.id || '',
+        }));
+    }
+    
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+// ─── Exports ──────────────────────────────────────────────────────────────────
+export { 
+  M3uParsedItem, 
+  M3uParsedPlaylist, 
+  isM3uParsedPlaylist, 
+  isM3uParsedItem,
+  m3uItemToRawJsonStream,
+  flattenJson,
+  extractPrimaryUrl,
+  extractAllUrls,
+  extractName,
+  extractLogo,
+  extractGroup,
+  extractTvgId,
+  extractHeaders,
+  detectStreamType,
+  hasDRM,
+  parsePipeUrl,
+};
